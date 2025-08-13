@@ -1,3 +1,7 @@
+python3 -m venv venv
+source venv/bin/activate
+ kill ->
+ lsof -i :8010 
 # Agents Tool Kit
 
 This repository contains a collection of tools and resources for building and managing AI agents.
