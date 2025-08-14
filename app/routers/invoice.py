@@ -3,7 +3,7 @@ import os
 from io import BytesIO
 from typing import Dict, Any, List, Optional
 import requests
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -18,6 +18,14 @@ router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(BASE_DIR, "generated_pdfs")
 os.makedirs(PDF_DIR, exist_ok=True)
+
+def cleanup_file(path: str):
+    """Deletes a file from the filesystem."""
+    try:
+        os.remove(path)
+    except OSError as e:
+        # Handle cases where the file might not exist or other errors
+        print(f"Error deleting file {path}: {e}")
 
 # --- Helper functions ---
 def _fetch_image_bytes(url: str, timeout: int = 6) -> Optional[BytesIO]:
@@ -110,14 +118,19 @@ def _generate_invoice_reportlab(invoice_id: str, data: Dict[str, Any]) -> str:
     doc.build(elements)
     return file_path
 
-@router.post("/invoice_generator/", tags=["Invoice"])
-async def create_invoice(payload: Dict[str, Any] = Body(...)):
+@router.post("/invoice_generator/")
+async def create_invoice(payload: Dict[str, Any] = Body(...), background_tasks: BackgroundTasks = None):
     invoice_id = payload.get("invoice_number", "default_invoice")
     if not invoice_id:
         raise HTTPException(status_code=400, detail="Invoice number is required")
     
     try:
         pdf_path = generate_invoice_pdf(invoice_id, payload)
+        
+        # Add a background task to delete the file after the response is sent
+        if background_tasks:
+            background_tasks.add_task(cleanup_file, pdf_path)
+            
         return FileResponse(pdf_path, media_type='application/pdf', filename=f"{invoice_id}.pdf")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {e}")
