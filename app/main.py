@@ -32,7 +32,3 @@ async def say_hi(name: str):
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "Welcome to the Simple FastAPI CRUD API! Visit /docs for API documentation 💎💎💎."}
-
-@app.get("/tools/{name}", tags=["Greeting"])
-async def say_hi(name: str):
-    return {"message": f"getting ready {name}!"}
