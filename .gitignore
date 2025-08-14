@@ -2,7 +2,8 @@
 venv/
 *.venv
 .venv
-
+.env
+.gitignore
 # Python cache
 __pycache__/
 *.pyc
