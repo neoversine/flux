@@ -3,6 +3,8 @@ import os
 from io import BytesIO
 from typing import Dict, Any, List, Optional
 import requests
+from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import FileResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -10,95 +12,12 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, Flowable
 )
-from jinja2 import Template
-from weasyprint import HTML
+
+router = APIRouter()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(BASE_DIR, "generated_pdfs")
 os.makedirs(PDF_DIR, exist_ok=True)
-
-# --- Default HTML template (embedded) ---
-DEFAULT_HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Invoice {{ invoice_number }}</title>
-<style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    h1 { color: #333; }
-    .header { display: flex; justify-content: space-between; }
-    .company, .client { width: 45%; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background-color: #f5f5f5; }
-    .right { text-align: right; }
-    .total { font-weight: bold; }
-</style>
-</head>
-<body>
-    <div class="header">
-        <div class="company">
-            <h2>{{ company_name }}</h2>
-            <p>{{ company_address|replace("\n", "<br/>") }}</p>
-            <p>{{ company_email }}</p>
-            <p>{{ company_phone }}</p>
-        </div>
-        <div class="client">
-            <h3>BILL TO:</h3>
-            <p>{{ client_name }}</p>
-            <p>{{ client_address|replace("\n", "<br/>") }}</p>
-            <p>{{ client_email }}</p>
-        </div>
-    </div>
-
-    <h1>Invoice</h1>
-    <p><b>Invoice #:</b> {{ invoice_number }}<br>
-    <b>Date:</b> {{ invoice_date }}<br>
-    <b>Due Date:</b> {{ due_date }}<br>
-    <b>Amount Due:</b> {{ currency }}{{ '%.2f' % _grand_total }}</p>
-
-    <table>
-        <tr>
-            <th>Description</th>
-            <th>Qty</th>
-            <th>Unit Price</th>
-            <th>Total</th>
-        </tr>
-        {% for item in items %}
-        <tr>
-            <td>{{ item.description }}</td>
-            <td class="right">{{ item.quantity }}</td>
-            <td class="right">{{ currency }}{{ '%.2f' % item.unit_price }}</td>
-            <td class="right">{{ currency }}{{ '%.2f' % item.total }}</td>
-        </tr>
-        {% endfor %}
-        <tr>
-            <td colspan="3" class="right total">Subtotal</td>
-            <td class="right total">{{ currency }}{{ '%.2f' % _subtotal }}</td>
-        </tr>
-        <tr>
-            <td colspan="3" class="right total">Tax ({{ tax_rate*100 }}%)</td>
-            <td class="right total">{{ currency }}{{ '%.2f' % _tax_amount }}</td>
-        </tr>
-        <tr>
-            <td colspan="3" class="right total">Grand Total</td>
-            <td class="right total">{{ currency }}{{ '%.2f' % _grand_total }}</td>
-        </tr>
-    </table>
-
-    {% if notes %}
-    <h3>Notes</h3>
-    <p>{{ notes }}</p>
-    {% endif %}
-
-    {% if terms %}
-    <h3>Terms</h3>
-    <p>{{ terms }}</p>
-    {% endif %}
-</body>
-</html>
-"""
 
 # --- Helper functions ---
 def _fetch_image_bytes(url: str, timeout: int = 6) -> Optional[BytesIO]:
@@ -131,19 +50,8 @@ def _money(val: float, currency: str = "$") -> str:
     return f"{currency}{val:,.2f}"
 
 # --- Main invoice generation function ---
-def generate_invoice_pdf(invoice_id: str, data: Dict[str, Any], use_html_template: bool = False) -> str:
-    if use_html_template:
-        return _generate_invoice_html(invoice_id, data)
-    else:
-        return _generate_invoice_reportlab(invoice_id, data)
-
-# HTML method
-def _generate_invoice_html(invoice_id: str, data: Dict[str, Any]) -> str:
-    template = Template(DEFAULT_HTML_TEMPLATE)
-    html_content = template.render(**data)
-    file_path = os.path.join(PDF_DIR, f"{invoice_id}.pdf")
-    HTML(string=html_content).write_pdf(file_path)
-    return file_path
+def generate_invoice_pdf(invoice_id: str, data: Dict[str, Any]) -> str:
+    return _generate_invoice_reportlab(invoice_id, data)
 
 # ReportLab method
 def _generate_invoice_reportlab(invoice_id: str, data: Dict[str, Any]) -> str:
@@ -201,3 +109,15 @@ def _generate_invoice_reportlab(invoice_id: str, data: Dict[str, Any]) -> str:
 
     doc.build(elements)
     return file_path
+
+@router.post("/invoice_generator/", tags=["Invoice"])
+async def create_invoice(payload: Dict[str, Any] = Body(...)):
+    invoice_id = payload.get("invoice_number", "default_invoice")
+    if not invoice_id:
+        raise HTTPException(status_code=400, detail="Invoice number is required")
+    
+    try:
+        pdf_path = generate_invoice_pdf(invoice_id, payload)
+        return FileResponse(pdf_path, media_type='application/pdf', filename=f"{invoice_id}.pdf")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {e}")

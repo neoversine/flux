@@ -1,3 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
+reportlab
+requests
