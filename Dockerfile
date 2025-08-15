@@ -24,4 +24,4 @@ EXPOSE 8010
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Run the application (replace with your actual command)
-# CMD ["python", "your_app.py"]
+CMD ["uvicorn app.main:app --host 0.0.0.0 --port 8010"]
