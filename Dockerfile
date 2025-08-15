@@ -1,20 +1,13 @@
 # Use an official Python runtime as a parent image
-FROM python:3.9-slim-buster
+FROM python:3.9-slim-bullseye
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy the requirements file into the container at /app
+# Copy the requirements file
 COPY requirements.txt .
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright and its browsers
-RUN pip install playwright
-RUN python3 -m playwright install
-
-# Install additional dependencies for Playwright
+# Install required packages for Playwright
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libatk1.0-0 \
@@ -27,16 +20,21 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright and its browsers
+RUN pip install playwright \
+    && python3 -m playwright install --with-deps
 
 # Copy the rest of the application code
 COPY . .
 
-# Make port 8010 available to the world outside this container
+# Expose port
 EXPOSE 8010
 
-# Define environment variable for Playwright
+# Environment variable for Playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Run the application (replace with your actual command)
+# Run the app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
-
