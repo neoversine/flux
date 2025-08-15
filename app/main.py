@@ -44,6 +44,12 @@ with gr.Blocks(title="React Website Multi-Page Scraper") as gradio_app:
 # Mount Gradio inside FastAPI
 # --------------------------
 app = gr.mount_gradio_app(app, gradio_app, path="/webscraper")
+
+# --- Static Files ---
+@app.get("/manifest.json", include_in_schema=False)
+async def manifest():
+    return FileResponse("app/static/manifest.json")
+
 # --- Extra routes ---
 @app.get("/hi/{name}", tags=["Greeting"])
 async def say_hi(name: str):
