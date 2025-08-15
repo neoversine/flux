@@ -3,3 +3,6 @@ uvicorn[standard]
 pydantic
 reportlab
 requests
+gradio
+playwright
+beautifulsoup4
