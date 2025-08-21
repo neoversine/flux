@@ -1,14 +1,15 @@
-from pydantic_settings import BaseSettings
-
-from typing import ClassVar
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    MONGO_URI: str 
+    MONGO_URI: str
     DATABASE_NAME: str
-    JWT_SECRET: str 
-    ACCESS_TOKEN_EXPIRE_MINUTES: int =60
+    JWT_SECRET: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
-    class Config:
-        env_file = ".env"
+    # ✅ Ignore all extra environment variables Coolify sets
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        env_file=".env"
+    )
 
 settings = Settings()
