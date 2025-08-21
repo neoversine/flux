@@ -1,10 +1,13 @@
+import subprocess
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-from bs4.element import Tag 
+import multiprocessing
+from functools import partial
+import asyncio
+import sys
 import urllib.parse
+from typing import Dict, List, Set, cast
+from bs4 import BeautifulSoup, Tag
 import re
-from typing import Set, Dict, List , cast
-import gradio as gr
 import json
 
 # --------------------------
@@ -218,16 +221,22 @@ def detect_tech(html: str, scripts: List[str], headers: Dict[str, str]) -> List[
 # --------------------------
 
 
-def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict]:
+
+def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
     start_url = normalize_url(start_url)
     visited: Set[str] = set()
     results = []
-
+    
     parsed_start = urllib.parse.urlparse(start_url)
     base_domain = f"{parsed_start.scheme}://{parsed_start.netloc}"
 
     def is_valid_link(href: str) -> bool:
         return bool(href and (href.startswith('/') or href.startswith(base_domain)))
+
+    try:
+        subprocess.run(['playwright', 'install'], check=True)
+    except Exception as e:
+        print(f"Warning: Failed to install playwright: {str(e)}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -297,10 +306,25 @@ def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict]:
 
     return results
 
+async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict]:
+    start_url = normalize_url(start_url)
+    
+    # Create a process pool with just one process to run Playwright
+    with multiprocessing.Pool(1) as pool:
+        # Run the scraping in a separate process
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,  # Uses default executor
+            partial(pool.apply, _scrape_single_process, (start_url, max_pages))
+        )
+        
+    return result
+
+    return results
+
 
 
 # --------------------------
-# Formatting Output for Gradio Tabs
+# Formatting Output for Different Types
 # --------------------------
 
 def format_json_output(markdown_content: str) -> str:
@@ -310,79 +334,74 @@ def format_json_output(markdown_content: str) -> str:
     json_string = json.dumps({"markdown": markdown_with_gaps}, indent=2, ensure_ascii=False)
     return json_string
 
-[{
-	"resource": "/root/agents_tool_kit/app/main.py",
-	"owner": "pylance",
-	"code": {
-		"value": "reportArgumentType",
-		"target": {
-			"$mid": 1,
-			"path": "/microsoft/pylance-release/blob/main/docs/diagnostics/reportArgumentType.md",
-			"scheme": "https",
-			"authority": "github.com"
-		}
-	},
-	"severity": 8,
-	"message": "Argument of type \"List[Dict[Unknown, Unknown]]\" cannot be assigned to parameter \"markdown_content\" of type \"str\" in function \"format_json_output\"\n  \"List[Dict[Unknown, Unknown]]\" is not assignable to \"str\"",
-	"source": "Pylance",
-	"startLineNumber": 125,
-	"startColumn": 47,
-	"endLineNumber": 125,
-	"endColumn": 54,
-	"origin": "extHost2"
-}]
+
 def format_markdown_output(results: List[Dict]) -> str:
     md_output = []
     for r in results:
-        md_output.append(f"# {r['url']}\n\n")  # URL as top-level heading
+        if not isinstance(r, dict):
+            continue
 
-        soup = BeautifulSoup(r["raw_html"], "html.parser")
+        url = r.get('url', 'Unknown URL')
+        soup = BeautifulSoup(r.get('raw_html', ''), 'html.parser')
+        detected_tech = r.get('detected_tech', [])
 
-        # --- 1. Logo and Site Title ---
-        logo_tag: Tag | None = None
-        site_title = soup.find("title")
-        site_title_text = site_title.get_text(strip=True) if site_title else ""
+        # Site Header
+        md_output.append(f"# Website Analysis: {url}\n")
+        
+        # Site Title
+        title = soup.find('title')
+        if title:
+            md_output.append(f"## {title.get_text(strip=True)}\n")
 
-        for img in soup.find_all("img"):
-            if isinstance(img, Tag):
-                src = img.get("src")
-                if isinstance(src, str) and "logo" in src.lower():
-                    logo_tag = img
-                    break
+        # Technology Stack Section
+        md_output.append("\n## Technology Stack\n")
+        
+        # Frontend Technologies
+        frontend_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Frontend')]), [])]
+        if frontend_tech:
+            md_output.append("\n### Frontend\n")
+            for tech in frontend_tech:
+                md_output.append(f"- **{tech}**\n")
 
-        if logo_tag:
-            src = logo_tag.get("src")
-            logo_url = urllib.parse.urljoin(r["url"], src) if isinstance(src, str) else r["url"]
-            md_output.append(f"[![logo]({logo_url})]({r['url']})")
-            if site_title_text:
-                md_output.append(f" {site_title_text}")
-            md_output.append("\n\n")
-        elif site_title_text:
-            md_output.append(f"# {site_title_text}\n\n")
+        # Backend Technologies
+        backend_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Backend')]), [])]
+        if backend_tech:
+            md_output.append("\n### Backend\n")
+            for tech in backend_tech:
+                md_output.append(f"- **{tech}**\n")
 
-        # --- 2. Navigation links ---
-        nav_links: List[str] = []
-        for nav_tag in soup.find_all(["nav", "header", "footer"]):
-            if isinstance(nav_tag, Tag):
-                for a in nav_tag.find_all("a", href=True):
-                    if isinstance(a, Tag):
-                        href = a.get("href")
-                        if isinstance(href, str):
-                            full_url = urllib.parse.urljoin(r["url"], href)
-                            text = a.get_text(strip=True)
-                            if text and len(text) < 50 and full_url != r["url"] + "#":
-                                nav_links.append(f"[{text}]({full_url})")
+        # Database Technologies
+        db_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Databases')]), [])]
+        if db_tech:
+            md_output.append("\n### Databases\n")
+            for tech in db_tech:
+                md_output.append(f"- **{tech}**\n")
 
-        if nav_links:
-            md_output.append(" ".join(nav_links))
-            md_output.append("\n\n")
+        # Hosting/CDN Technologies
+        hosting_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('CDNs / Hosting')]), [])]
+        if hosting_tech:
+            md_output.append("\n### Hosting & CDN\n")
+            for tech in hosting_tech:
+                md_output.append(f"- **{tech}**\n")
 
-        # --- 3. Main Content ---
-        md_output.append(r["content"])
-        md_output.append("\n\n")
+        # Analytics and Other Technologies
+        other_tech = [tech for tech in detected_tech if tech not in frontend_tech + backend_tech + db_tech + hosting_tech]
+        if other_tech:
+            md_output.append("\n### Other Technologies\n")
+            for tech in other_tech:
+                md_output.append(f"- **{tech}**\n")
 
-        # --- 4. Tech stack ---
-        md_output.append(f"**Detected Tech:** {', '.join(r['detected_tech'])}\n\n")
+        # Content Section
+        md_output.append("\n## Content Preview\n")
+        content = r.get('content', 'No content available.')
+        md_output.append(f"```\n{content[:500]}{'...' if len(content) > 500 else ''}\n```\n")
+
+        # Navigation Links
+        links = r.get('links', [])
+        if links:
+            md_output.append("\n## Site Navigation\n")
+            for link in links[:10]:  # Limit to first 10 links
+                md_output.append(f"- [{link}]({link})\n")
 
         md_output.append("\n---\n\n")
 
@@ -392,22 +411,43 @@ def format_markdown_output(results: List[Dict]) -> str:
 def format_text_output(results: List[Dict]) -> str:
     text_output = []
     for r in results:
-        text_output.append(f"URL: {r['url']}\n") # Added newline
-        text_output.append(f"Detected Tech: {', '.join(r['detected_tech'])}\n") # Added newline
-        text_output.append("\nContent:\n")
-        text_output.append(r['content'])
-        text_output.append("\n\n---\n\n") # Added newlines
-    text_string = "\n".join(text_output)
-    # Add extra newline after each line (excluding the content block)
-    # This might be too much spacing, let's revert to adding spacing between sections like markdown
-    text_output_spaced = []
-    for r in results:
-        text_output_spaced.append(f"URL: {r['url']}\n\n")
-        text_output_spaced.append(f"Detected Tech: {', '.join(r['detected_tech'])}\n\n")
-        text_output_spaced.append("Content:\n\n")
-        text_output_spaced.append(r['content'])
-        text_output_spaced.append("\n\n---\n\n")
-    return "".join(text_output_spaced)
+        if not isinstance(r, dict):
+            continue
+
+        url = r.get('url', 'Unknown URL')
+        if not isinstance(url, str):
+            url = str(url)
+
+        soup = BeautifulSoup(r.get('raw_html', ''), 'html.parser')
+        title = soup.find('title')
+        title_text = title.get_text(strip=True) if title else 'No Title'
+
+        detected_tech = r.get('detected_tech', ['Unknown'])
+        content = r.get('content', 'No content available.')
+        if not isinstance(content, str):
+            content = str(content)
+
+        # Structure the output in a more readable format
+        text_output.extend([
+            f"Website: {url}",
+            f"Title: {title_text}",
+            "\nTechnology Stack:",
+            "----------------",
+            "Frontend:",
+            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Frontend')]), [])] or ['None detected']),
+            "\nBackend:",
+            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Backend')]), [])] or ['None detected']),
+            "\nDatabases:",
+            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Databases')]), [])] or ['None detected']),
+            "\nHosting/CDN:",
+            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('CDNs / Hosting')]), [])] or ['None detected']),
+            "\nContent Preview:",
+            "---------------",
+            content[:1000] + ('...' if len(content) > 1000 else ''),
+            "\n" + "="*50 + "\n"
+        ])
+    
+    return "\n".join(text_output)
 
 def format_ai_response_output(results: List[Dict]) -> str:
      # Placeholder for AI summarization or analysis

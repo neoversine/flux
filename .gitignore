@@ -1,15 +1,74 @@
-# Virtual Environment
-venv/
-*.venv
-.venv
-.env
-.gitignore
-# Python cache
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+*.sqlite3
+
+# Virtual environment
+.venv/
+env/
+venv/
+venv311/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+python-3.11.8-amd64.exe
+
+# Python packages
+*.egg-info/
+pip-wheel-metadata/
+*.eggs/
+
+# Playwright browsers
+playwright/.local-browsers/
+
+# Test reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+coverage.xml
+*.cover
+.cache
+nosetests.xml
+pytest_cache/
+
+# MongoDB data (if local)
+data/
+dump/
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
+
+# PyCharm
+*.iml
+*.iws
+.idea/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Generated files
 *.pyc
 *.pyo
 *.pyd
-
-# IDE / Editor specific
-.vscode/
-.idea/

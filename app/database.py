@@ -1,11 +1,10 @@
-from typing import Dict, List
+from motor.motor_asyncio import AsyncIOMotorClient
+from .config import settings
 
-# In-memory database for demonstration purposes
-items_db: Dict[int, Dict] = {}
-next_item_id: int = 1
+client = AsyncIOMotorClient(settings.MONGO_URI)
+db = client[settings.DATABASE_NAME]
 
-def get_next_item_id() -> int:
-    global next_item_id
-    _id = next_item_id
-    next_item_id += 1
-    return _id
+async def create_indexes():
+    # create unique index for username and secret_token
+    await db.users.create_index("username", unique=True)
+    await db.users.create_index("secret_token", unique=True, sparse=True)
