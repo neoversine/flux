@@ -70,7 +70,7 @@ async def log_api_usage(request: Request, call_next):
     return response
 
 
-@app.get("/auth/me", response_model=UserOut)
+# @app.get("/auth/me", response_model=UserOut)
 @app.post("/auth/generate-secret", response_model=GenerateSecretOut)
 async def generate_secret(current_user=Depends(get_current_user)):
     # current_user is a dict from deps.get_current_user
@@ -86,8 +86,8 @@ def me(current_user=Depends(get_current_user)):
     return {
         "id": str(current_user["_id"]),
         "username": current_user["username"],
-        "plan": current_user.get("plan", 0),
-        "secret_token": current_user.get("secret_token")
+        # "plan": current_user.get("plan", 0),
+        # "secret_token": current_user["secret_token"]
     }
 
 # Simple route to change plan for demonstration (not required but helpful)
