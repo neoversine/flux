@@ -17,8 +17,8 @@ class LoginOut(BaseModel):
 class UserOut(BaseModel):
     id: str
     username: str
-    plan: int
-    secret_token: Optional[str] = None
+    # plan: int
+    # secret_token: Optional[str] = None
 
 class GenerateSecretOut(BaseModel):
     secret_token: str

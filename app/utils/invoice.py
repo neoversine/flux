@@ -599,4 +599,8 @@ async def create_invoice(
 # Legacy function for backward compatibility
 def generate_invoice_pdf(invoice_id: str, data: Dict[str, Any]) -> str:
     generator = InvoicePDFGenerator()
+<<<<<<< HEAD
     return generator.generate_pdf(invoice_id, data)
+=======
+    return generator.generate_pdf(invoice_id, data)
+>>>>>>> 08e444174bd102127247594ed7cfc3d5b03b6d9b

@@ -55,3 +55,10 @@ async def generate_secret(current_user=Depends(get_current_user)):
     token = secrets.token_hex(24)
     await db.users.update_one({"_id": current_user["_id"]}, {"$set": {"secret_token": token}})
     return {"secret_token": token}
+
+
+@router.get("/get-secret", response_model=GenerateSecretOut)
+async def get_secret(current_user=Depends(get_current_user)):
+    user = await db.users.find_one({"_id": current_user["_id"]}, {"secret_token": 1})
+    return {"secret_token": user.get("secret_token")}
+

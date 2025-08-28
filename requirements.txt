@@ -14,4 +14,8 @@ typing-extensions
 fastapi[all]
 python-multipart
 requests
+<<<<<<< HEAD
 reportlab
+=======
+reportlab
+>>>>>>> 08e444174bd102127247594ed7cfc3d5b03b6d9b

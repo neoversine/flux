@@ -17,7 +17,11 @@ from datetime import datetime
 import time
 from .database import db
 from fastapi.middleware.cors import CORSMiddleware
+<<<<<<< HEAD
 from .utils.invoice import router as invoice_router
+=======
+from invoice import router as invoice_router
+>>>>>>> 08e444174bd102127247594ed7cfc3d5b03b6d9b
 
 
 if sys.platform == "win32" and sys.version_info >= (3, 8):
@@ -87,8 +91,13 @@ def me(current_user=Depends(get_current_user)):
     return {
         "id": str(current_user["_id"]),
         "username": current_user["username"],
+<<<<<<< HEAD
         "plan": current_user.get("plan", 0),
         "secret_token": current_user["secret_token"]
+=======
+        # "plan": current_user.get("plan", 0),
+        # "secret_token": current_user["secret_token"]
+>>>>>>> 08e444174bd102127247594ed7cfc3d5b03b6d9b
     }
 
 # Simple route to change plan for demonstration (not required but helpful)
