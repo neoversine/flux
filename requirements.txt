@@ -13,3 +13,5 @@ regex
 typing-extensions
 fastapi[all]
 python-multipart
+requests
+reportlab
