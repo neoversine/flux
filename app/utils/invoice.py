@@ -2,7 +2,7 @@
 import os
 import logging
 from io import BytesIO
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from decimal import Decimal, ROUND_HALF_UP
 
 import requests
@@ -150,7 +150,7 @@ class CurrencyFormatter:
     """Handles currency formatting."""
     
     @staticmethod
-    def format_money(amount: float | Decimal, currency: str = DEFAULT_CURRENCY) -> str:
+    def format_money(amount: Union[float, Decimal], currency: str = DEFAULT_CURRENCY) -> str:
         if isinstance(amount, Decimal):
             amount = float(amount)
         
@@ -258,7 +258,7 @@ class InvoicePDFGenerator:
         self.currency_formatter = CurrencyFormatter()
         self.style_manager = InvoiceStyleManager()
     
-    def generate_pdf(self, invoice_id: str, data: Dict[str, Any] | InvoicePayload) -> str:
+    def generate_pdf(self, invoice_id: str, data: Union[Dict[str, Any], InvoicePayload]) -> str:
         try:
             # Convert Pydantic model to dict if needed
             if isinstance(data, InvoicePayload):
@@ -538,7 +538,7 @@ def cleanup_file(path: str) -> None:
         logger.error(f"Error deleting file {path}: {e}")
 
 
-def validate_invoice_data(data: Dict[str, Any] | InvoicePayload) -> None:
+def validate_invoice_data(data: Union[Dict[str, Any], InvoicePayload]) -> None:
     # Convert Pydantic model to dict if needed
     if isinstance(data, InvoicePayload):
         data_dict = data.model_dump()
@@ -600,4 +600,3 @@ async def create_invoice(
 def generate_invoice_pdf(invoice_id: str, data: Dict[str, Any]) -> str:
     generator = InvoicePDFGenerator()
     return generator.generate_pdf(invoice_id, data)
-
