@@ -299,7 +299,7 @@ class InvoicePDFGenerator:
         doc.build(elements)
         return file_path
     
-    def _convert_pdf_to_image(self, pdf_path: str, invoice_id: str, fmt: str = "png") -> str:
+    def _convert_pdf_to_image(self, pdf_path: str, invoice_id: str, fmt: str = "jpg") -> str:
         """Converts the first page of a PDF to an image."""
         image_path = os.path.join(IMAGE_DIR, f"{invoice_id}.{fmt}")
         try:
@@ -307,7 +307,7 @@ class InvoicePDFGenerator:
             images = convert_from_path(pdf_path, first_page=1, last_page=1)
             if images:
                 # Save the first page as an image
-                images[0].save(image_path, fmt)
+                images[0].save(image_path, "JPEG")
                 logger.info(f"Successfully converted PDF to image: {image_path}")
                 return image_path
             else:
