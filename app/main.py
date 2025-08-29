@@ -105,9 +105,12 @@ app.include_router(invoice_router, prefix="/api", tags=["invoices"])
 
 @app.get("/places/")
 async def get_places(
-     location: str = Query(..., description="Any address, area, or ward (e.g., 'Ward 94 Kolkata', 'Ballygunge Kolkata')"),
+    location: str = Query(..., description="Any address, area, or ward (e.g., 'Ward 94 Kolkata', 'Ballygunge Kolkata')"),
     type: str = Query(..., description="One or more types (comma-separated, e.g., 'restaurant,hotel,cafe')"),
     radius: int = Query(5000, ge=1000, le=20000, description="Search radius in meters (default 5000=5km)"),
     limit: int = Query(10, ge=1, le=50, description="Number of results (default 10, max 50)")
 ):
-    return search_places(location=location, type=type, radius=radius, limit=limit)
+    # Await the coroutine before returning
+    results = await search_places(location=location, type=type, radius=radius, limit=limit)
+    return results
+
