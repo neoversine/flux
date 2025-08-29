@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Install system dependencies for Playwright
+# Install system dependencies for Playwright + Poppler (for pdf2image)
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libatk1.0-0 \
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     libasound2 \
     wget \
+    poppler-utils \ 
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
