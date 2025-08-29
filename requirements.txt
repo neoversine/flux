@@ -16,3 +16,4 @@ python-multipart
 requests
 reportlab
 pdf2image
+geopy
