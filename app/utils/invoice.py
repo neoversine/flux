@@ -631,7 +631,7 @@ async def create_invoice(
 async def create_invoice_image(
     background_tasks: BackgroundTasks,
     payload: InvoicePayload = Body(...),
-    image_format: str = "png" # Allow specifying image format
+    image_format: str = "jpg" # Allow specifying image format
 ) -> FileResponse:
     try:
         validate_invoice_data(payload)
@@ -668,7 +668,7 @@ async def create_invoice_image(
 
 
 # Legacy function for backward compatibility
-def generate_invoice_image(invoice_number, customer_name, items, total, output_path="invoice.png"):
+def generate_invoice_image(invoice_number, customer_name, items, total, output_path="invoice.jpg"):
     """
     Generates a simple invoice image using PIL.
     
@@ -724,5 +724,5 @@ def generate_invoice_image(invoice_number, customer_name, items, total, output_p
     draw.text((50, y), f"Total: ₹{total}", font=font, fill="black")
 
     # Save as PNG
-    image.save(output_path, "PNG")
+    image.save(output_path, "JPEG")
     return output_path
