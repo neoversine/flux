@@ -18,7 +18,7 @@ import time
 from .database import db
 from fastapi.middleware.cors import CORSMiddleware
 from .utils.invoice import router as invoice_router
-from .utils.newdatascraper import search_places
+from .utils.DataScraper import search_places
 
 
 if sys.platform == "win32" and sys.version_info >= (3, 8):
