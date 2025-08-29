@@ -1,16 +1,10 @@
 import requests
-from typing import Optional, cast
-from fastapi import FastAPI, Query, HTTPException
+from typing import Optional, cast, List, Dict, Any
 from geopy.geocoders import Nominatim
 from geopy.location import Location
 from math import radians, cos, sin, sqrt, atan2
 from starlette.concurrency import run_in_threadpool
-
-app = FastAPI(
-    title="OSM Places API",
-    description="Search nearby places using OSM + Overpass",
-    version="1.0"
-)
+from fastapi import HTTPException # Keep HTTPException for potential use within the function
 
 # Type mapping for OSM
 TYPE_MAPPING = {
@@ -82,7 +76,7 @@ TYPE_MAPPING = {
 
 
 # Calculate distance (Haversine formula)
-def calculate_distance(lat1, lon1, lat2, lon2):
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371  # Earth radius in km
     dlat = radians(lat2 - lat1)
     dlon = radians(lon2 - lon1)
@@ -91,13 +85,12 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
-@app.get("/places")
-async def get_places(
-    location: str = Query(..., description="Any address or ward (e.g., 'Ballygunge Kolkata')"),
-    type: str = Query(..., description="Type of place (restaurant, hotel, cafe, gym, etc.)"),
-    radius: int = Query(5000, ge=1000, le=20000, description="Search radius in meters"),
-    limit: int = Query(10, ge=1, le=50, description="Number of results")
-):
+async def search_places(
+    location: str,
+    type: str,
+    radius: int,
+    limit: int
+) -> Dict[str, Any]:
     # Step 1: Geocode location
     geolocator = Nominatim(user_agent="osm_api")
     loc: Optional[Location] = cast(Optional[Location], await run_in_threadpool(geolocator.geocode, location))
