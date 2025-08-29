@@ -22,7 +22,7 @@ from PIL import Image as PILImage, ImageDraw, ImageFont
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-images = convert_from_path("invoice.pdf")  
+
 
 router = APIRouter()
 
