@@ -14,23 +14,28 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, Flowable
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as ImageFlowable, Flowable
 )
+from pdf2image import convert_from_path, exceptions
+from PIL import Image as PILImage, ImageDraw, ImageFont
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+images = convert_from_path("invoice.pdf")  
 
 router = APIRouter()
 
 # Constants
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(BASE_DIR, "generated_pdfs")
+IMAGE_DIR = os.path.join(BASE_DIR, "generated_images") # New directory for images
 DEFAULT_TIMEOUT = 6
 DEFAULT_CURRENCY = "$"
 
-# Ensure PDF directory exists
+# Ensure directories exist
 os.makedirs(PDF_DIR, exist_ok=True)
+os.makedirs(IMAGE_DIR, exist_ok=True) # Ensure image directory exists
 
 
 class InvoiceGenerationError(Exception):
@@ -129,7 +134,7 @@ class ImageHandler:
             return None
     
     @staticmethod
-    def create_image(source: Optional[str], width: float, height: float) -> Optional[Image]:
+    def create_image(source: Optional[str], width: float, height: float) -> Optional[ImageFlowable]:
         if not source:
             return None
         
@@ -137,9 +142,9 @@ class ImageHandler:
             if source.startswith(("http://", "https://")):
                 image_bytes = ImageHandler.fetch_image_bytes(source)
                 if image_bytes:
-                    return Image(image_bytes, width=width, height=height)
+                    return ImageFlowable(image_bytes, width=width, height=height)
             elif os.path.exists(source):
-                return Image(source, width=width, height=height)
+                return ImageFlowable(source, width=width, height=height)
         except Exception as e:
             logger.warning(f"Failed to create image from {source}: {e}")
         
@@ -294,6 +299,26 @@ class InvoicePDFGenerator:
         doc.build(elements)
         return file_path
     
+    def _convert_pdf_to_image(self, pdf_path: str, invoice_id: str, fmt: str = "png") -> str:
+        """Converts the first page of a PDF to an image."""
+        image_path = os.path.join(IMAGE_DIR, f"{invoice_id}.{fmt}")
+        try:
+            # Convert PDF to a list of images (one image per page)
+            images = convert_from_path(pdf_path, first_page=1, last_page=1)
+            if images:
+                # Save the first page as an image
+                images[0].save(image_path, fmt)
+                logger.info(f"Successfully converted PDF to image: {image_path}")
+                return image_path
+            else:
+                raise InvoiceGenerationError("No images found in PDF for conversion.")
+        except exceptions.PopplerNotInstalledError:
+            logger.error("Poppler is not installed or not in PATH. Please install Poppler to enable PDF to image conversion.")
+            raise InvoiceGenerationError("PDF to image conversion failed: Poppler is not installed. Please install Poppler and ensure it's in your system's PATH.")
+        except Exception as e:
+            logger.error(f"Failed to convert PDF to image from {pdf_path} for invoice {invoice_id}: {e}")
+            raise InvoiceGenerationError(f"Image conversion failed: {str(e)}")
+
     def _create_header_section(self, data: Dict[str, Any]) -> List[Flowable]:
         """Create header section with invoice title, company info, and logo."""
         elements: List[Flowable] = []
@@ -527,15 +552,20 @@ class InvoicePDFGenerator:
 
 
 # Utility functions
-def cleanup_file(path: str) -> None:
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-            logger.info(f"Successfully deleted file: {path}")
-        else:
-            logger.warning(f"File not found for deletion: {path}")
-    except OSError as e:
-        logger.error(f"Error deleting file {path}: {e}")
+def cleanup_file(paths: Union[str, List[str]]) -> None:
+    """Cleans up one or more files."""
+    if isinstance(paths, str):
+        paths = [paths]
+    
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"Successfully deleted file: {path}")
+            else:
+                logger.warning(f"File not found for deletion: {path}")
+        except OSError as e:
+            logger.error(f"Error deleting file {path}: {e}")
 
 
 def validate_invoice_data(data: Union[Dict[str, Any], InvoicePayload]) -> None:
@@ -596,7 +626,103 @@ async def create_invoice(
         )
 
 
+# API Endpoints
+@router.post("/invoice_image_generator/", response_model=None)
+async def create_invoice_image(
+    background_tasks: BackgroundTasks,
+    payload: InvoicePayload = Body(...),
+    image_format: str = "png" # Allow specifying image format
+) -> FileResponse:
+    try:
+        validate_invoice_data(payload)
+        
+        invoice_id = payload.invoice_number
+        
+        generator = InvoicePDFGenerator()
+        pdf_path = generator.generate_pdf(invoice_id, payload)
+        image_path = generator._convert_pdf_to_image(pdf_path, invoice_id, image_format)
+        
+        # Schedule both PDF and image files for cleanup
+        if background_tasks:
+            background_tasks.add_task(cleanup_file, [pdf_path, image_path])
+        
+        logger.info(f"Successfully generated invoice image: {invoice_id}.{image_format}")
+        
+        return FileResponse(
+            image_path,
+            media_type=f'image/{image_format}',
+            filename=f"{invoice_id}.{image_format}"
+        )
+        
+    except InvoiceGenerationError as e:
+        logger.error(f"Invoice image generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in invoice image generation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
+
+
 # Legacy function for backward compatibility
-def generate_invoice_pdf(invoice_id: str, data: Dict[str, Any]) -> str:
-    generator = InvoicePDFGenerator()
-    return generator.generate_pdf(invoice_id, data)
+def generate_invoice_image(invoice_number, customer_name, items, total, output_path="invoice.png"):
+    """
+    Generates a simple invoice image using PIL.
+    
+    Args:
+        invoice_number (str): The invoice number
+        customer_name (str): Name of the customer
+        items (list): List of (item, price) tuples
+        total (float): Total amount
+        output_path (str): Path where to save the image file
+        
+    Returns:
+        str: Path to the generated image file
+    """
+    # Create blank white image
+    width, height = 800, 1000
+    image = PILImage.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
+    # Load a font (use default if no ttf available)
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+        small_font = ImageFont.truetype("arial.ttf", 20)
+    except:
+        font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
+
+    y = 50
+
+    # Header
+    draw.text((50, y), f"Invoice #{invoice_number}", font=font, fill="black")
+    y += 60
+    draw.text((50, y), f"Customer: {customer_name}", font=small_font, fill="black")
+    y += 40
+
+    # Table header
+    draw.text((50, y), "Item", font=small_font, fill="black")
+    draw.text((400, y), "Price", font=small_font, fill="black")
+    y += 30
+    draw.line((50, y, 700, y), fill="black", width=2)
+    y += 20
+
+    # Items
+    for item, price in items:
+        draw.text((50, y), item, font=small_font, fill="black")
+        draw.text((400, y), f"₹{price}", font=small_font, fill="black")
+        y += 30
+
+    y += 20
+    draw.line((50, y, 700, y), fill="black", width=2)
+    y += 40
+
+    # Total
+    draw.text((50, y), f"Total: ₹{total}", font=font, fill="black")
+
+    # Save as PNG
+    image.save(output_path, "PNG")
+    return output_path
