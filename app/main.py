@@ -111,7 +111,7 @@ async def upgrade_plan(plan_id: int, current_user=Depends(get_current_user)):
 # Include the invoice router
 app.include_router(invoice_router, prefix="/api", tags=["invoices"])
 
-@app.get("/places/")
+@app.get("/places")
 async def get_places(
     location: str = Query(..., description="Any address, area, or ward (e.g., 'Ward 94 Kolkata', 'Ballygunge Kolkata')"),
     type: str = Query(..., description="One or more types (comma-separated, e.g., 'restaurant,hotel,cafe')"),
@@ -122,7 +122,7 @@ async def get_places(
     results = await search_places(location=location, type=type, radius=radius, limit=limit)
     return results
 
-@app.options("/places/")
+@app.options("/places")
 async def places_options():
     """Handle preflight OPTIONS request for places endpoint"""
     return {"message": "OK"}
