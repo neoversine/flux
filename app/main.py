@@ -42,8 +42,9 @@ app.add_middleware(
         "*"  # Temporary - allows all origins for debugging
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 @app.on_event("startup")
@@ -120,4 +121,9 @@ async def get_places(
     # Await the coroutine before returning
     results = await search_places(location=location, type=type, radius=radius, limit=limit)
     return results
+
+@app.options("/places/")
+async def places_options():
+    """Handle preflight OPTIONS request for places endpoint"""
+    return {"message": "OK"}
 
