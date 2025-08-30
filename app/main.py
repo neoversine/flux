@@ -33,7 +33,14 @@ app.include_router(usage.router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000","http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://localhost:5173",
+        "https://fasttools.neoversine.in",
+        "http://fasttools.neoversine.in",
+        "*"  # Temporary - allows all origins for debugging
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
