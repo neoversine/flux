@@ -39,6 +39,7 @@ app.add_middleware(
         "https://localhost:5173",
         "https://fasttools.neoversine.in",
         "http://fasttools.neoversine.in",
+        "https://neo-geo-scrapper.vercel.app/",
         "*"  # Temporary - allows all origins for debugging
     ],
     allow_credentials=True,
