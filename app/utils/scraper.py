@@ -5,21 +5,67 @@ from functools import partial
 import asyncio
 import sys
 import urllib.parse
+import uuid
 from typing import Dict, List, Set, cast
 from bs4 import BeautifulSoup, Tag
 import re
 import json
+from random import randint
 
 # --------------------------
 # Utility functions
 # --------------------------
 
 
+def handle_response_status(response):
+    """Handle different response statuses and cloud hosting scenarios."""
+    status = response.status
+    url = response.url
+    headers = response.headers
+    
+    if status >= 400:
+        error_msg = None
+        if 'x-amz-' in str(headers).lower() or 'cloudfront' in str(headers).lower():
+            if status == 403:
+                error_msg = "Access denied by AWS CloudFront or S3"
+            elif status == 404:
+                error_msg = "Resource not found on AWS"
+            else:
+                error_msg = f"AWS returned error status {status}"
+        elif 'azure' in str(headers).lower():
+            error_msg = f"Azure hosting error: Status {status}"
+        elif 'cf-ray' in str(headers).lower():
+            error_msg = f"Cloudflare protection active: Status {status}"
+            
+        if error_msg:
+            raise Exception(error_msg)
+
 def normalize_url(input_url: str) -> str:
+    """Normalize and validate the URL."""
     input_url = input_url.strip()
-    if not input_url.startswith("http://") and not input_url.startswith("https://"):
-        input_url = "https://" + input_url
-    return input_url
+
+    # Handle protocol
+    if not input_url.startswith(('http://', 'https://')):
+        input_url = 'https://' + input_url
+
+    # Parse the URL
+    try:
+        parsed = urllib.parse.urlparse(input_url)
+        netloc = parsed.netloc
+
+        # Enforce www prefix for bare domains
+        if netloc.count('.') == 1 and not netloc.startswith('www.'):
+            netloc = 'www.' + netloc
+
+        # Reconstruct the URL
+        path = parsed.path or '/'
+        final_url = f"{parsed.scheme}://{netloc}{path}"
+        if parsed.query:
+            final_url += f"?{parsed.query}"
+
+        return final_url
+    except Exception as e:
+        raise ValueError(f"Invalid URL format: {str(e)}")
 
 
 def get_text_from_html(html: str) -> str:
@@ -231,7 +277,14 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
     base_domain = f"{parsed_start.scheme}://{parsed_start.netloc}"
 
     def is_valid_link(href: str) -> bool:
-        return bool(href and (href.startswith('/') or href.startswith(base_domain)))
+        if not href:
+            return False
+        try:
+            parsed = urllib.parse.urlparse(href)
+            # Accept links that are either relative or from the same domain
+            return (not parsed.netloc) or parsed.netloc == parsed_start.netloc
+        except Exception:
+            return False
 
     try:
         subprocess.run(['playwright', 'install'], check=True)
@@ -239,9 +292,23 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
         print(f"Warning: Failed to install playwright: {str(e)}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        browser = p.firefox.launch(headless=True)
+        context = browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
+            java_script_enabled=True,
+            accept_downloads=True,
+            has_touch=False,
+            is_mobile=False,
+            locale='en-US'
+        )
         page = context.new_page()
+        
+        # Add error handling for common cloud hosting scenarios
+        page.on("response", lambda response: handle_response_status(response))
+        
+        # Set default timeout
+        page.set_default_timeout(30000)  # 30 seconds
         queue = [start_url]
 
         while queue and len(visited) < max_pages:
@@ -251,20 +318,92 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
 
             response = None
             try:
-                response = page.goto(current_url, timeout=15000)
-                page.wait_for_load_state('networkidle')
+                # Try to navigate to the page with proper error handling
+                response = page.goto(
+                    current_url,
+                    timeout=30000,
+                    wait_until="domcontentloaded"
+                )
+                status_code = response.status if response else None
+
+                if not response or (status_code is not None and status_code >= 400):
+                    error_msg = f"Website returned {status_code} for {current_url}"
+                    results.append({
+                        "url": current_url,
+                        "error": error_msg,
+                        "detected_tech": [],
+                        "tech_categories": {},
+                        "content": "",
+                        "raw_html": "",
+                        "links": [],
+                        "images": [],
+                        "metadata": {
+                            "title": None,
+                            "meta_description": None,
+                            "meta_keywords": None,
+                            "statusCode": status_code
+                        }
+                    })
+                    continue
+                
+                # Wait for the content to be loaded
+                page.wait_for_load_state('domcontentloaded')
+                page.wait_for_timeout(2000)  # Give JavaScript 2 seconds to execute
+                
+                # Add random mouse movements and delays to simulate human behavior
+                page.mouse.move(
+                    x=float(randint(100, 800)),
+                    y=float(randint(100, 600))
+                )
+                page.wait_for_timeout(randint(500, 1500))
+                
                 html = page.content()
                 visited.add(current_url)
 
                 soup = BeautifulSoup(html, "html.parser")
 
-                # ✅ Ensure tag is a Tag before calling .get()
-                scripts = []
-                for tag in soup.find_all("script", src=True):
+                # Extract all links and images
+                links = []
+                images = []
+                for tag in soup.find_all(['a', 'img']):
                     if isinstance(tag, Tag):
-                        src = tag.get("src")
-                        if isinstance(src, str):
-                            scripts.append(src)
+                        if tag.name == 'a':
+                            href = tag.get('href')
+                            text = tag.get_text(strip=True)
+                            if href:
+                                links.append({
+                                    'url': href,
+                                    'text': text if text else href
+                                })
+                        elif tag.name == 'img':
+                            src = tag.get('src')
+                            alt = tag.get('alt', '')
+                            if src:
+                                images.append({
+                                    'url': src,
+                                    'alt': alt
+                                })
+
+                # Collect scripts for tech detection
+                scripts = []
+                for tag in soup.find_all(["script", "link", "meta"]):
+                    if isinstance(tag, Tag):
+                        if tag.name == "script":
+                            src = tag.get("src")
+                            if src:
+                                scripts.append(src)
+                            # Also collect inline scripts for better detection
+                            if tag.string:
+                                scripts.append(tag.string)
+                        elif tag.name == "link":
+                            href = tag.get("href")
+                            if href:
+                                scripts.append(href)
+                        elif tag.name == "meta":
+                            content = tag.get("content", "")
+                            name = tag.get("name", "")
+                            if content and name:
+                                scripts.append(f"{name}:{content}")
 
                 headers = {}
                 if response is not None:
@@ -273,11 +412,64 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
                 tech_stack = detect_tech(html, scripts, headers)
                 text = get_text_from_html(html)
 
+                # Categorize the tech stack
+                tech_categories = {
+                    'frontend': [],
+                    'backend': [],
+                    'database': [],
+                    'hosting': [],
+                    'analytics': [],
+                    'cms': [],
+                    'payment': [],
+                    'other': []
+                }
+
+                CATEGORY_MAP = {
+                    "frontend": ["React", "Next.js", "Vue.js", "Angular", "Svelte", "jQuery", "Bootstrap", "Tailwind CSS", "Bulma", "Foundation", "Vuex", "Redux", "Gatsby", "Nuxt.js", "Vuetify", "Preact", "Lit", "Dojo"],
+                    "backend": ["Express.js", "NestJS", "Django", "Flask", "Rails", "Laravel", "ASP.NET", "Spring Boot", "Node.js", "Go", "Ruby", "PHP", "Python", "Java", "C#", "Kotlin", "Rust", "Scala"],
+                    "database": ["MongoDB", "PostgreSQL", "MySQL", "Firebase", "Supabase", "Redis", "Elasticsearch", "SQLite", "Microsoft SQL Server", "Cassandra", "Couchbase"],
+                    "hosting": ["Vercel", "Netlify", "Cloudflare", "Akamai", "AWS CloudFront", "Firebase Hosting", "Heroku", "Google Cloud Platform", "Azure", "AWS S3", "DigitalOcean Spaces"],
+                    "analytics": ["Google Analytics", "Google Tag Manager", "Hotjar", "Mixpanel", "Facebook Pixel", "Amplitude", "Matomo", "Segment", "Plausible Analytics"],
+                    "payment": ["Stripe", "Razorpay", "PayPal", "Auth0", "Firebase Auth", "Okta", "Paddle", "Square", "Adyen"],
+                    "cms": ["WordPress", "Drupal", "Shopify", "Magento", "Wix", "Joomla", "SquareSpace", "WooCommerce", "Headless CMS", "Contentful", "Strapi", "Ghost"],
+                    "other": ["GraphQL", "Webpack", "Babel", "Docker", "Kubernetes", "REST API", "gRPC", "WebAssembly", "Storybook", "Cypress", "Selenium", "WebSockets", "Service Workers"]
+                }
+
+                for tech in tech_stack:
+                    found_category = False
+                    for category, techs_in_category in CATEGORY_MAP.items():
+                        if tech in techs_in_category:
+                            tech_categories[category].append(tech)
+                            found_category = True
+                            break
+                    if not found_category:
+                        tech_categories['other'].append(tech)
+
+                # Extract metadata safely
+                metadata = {
+                    'title': soup.title.string if soup.title else None,
+                    'meta_description': None,
+                    'meta_keywords': None,
+                    'statusCode': status_code
+                }
+                
+                meta_desc = soup.find('meta', {'name': 'description'})
+                if isinstance(meta_desc, Tag):
+                    metadata['meta_description'] = meta_desc.get('content')
+                    
+                meta_keywords = soup.find('meta', {'name': 'keywords'})
+                if isinstance(meta_keywords, Tag):
+                    metadata['meta_keywords'] = meta_keywords.get('content')
+
                 results.append({
                     "url": current_url,
                     "detected_tech": tech_stack if tech_stack else ["Unknown"],
+                    "tech_categories": tech_categories,
                     "content": text,
-                    "raw_html": html
+                    "raw_html": html,
+                    "links": links,
+                    "images": images,
+                    "metadata": metadata
                 })
 
                 for link in soup.find_all("a", href=True):
@@ -295,11 +487,32 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
                             queue.append(full_url)
 
             except Exception as e:
+                error_message = str(e)
+                if "net::ERR_NAME_NOT_RESOLVED" in error_message:
+                    error_message = f"Could not resolve domain name for: {current_url}"
+                elif "net::ERR_CONNECTION_REFUSED" in error_message:
+                    error_message = f"Connection refused by: {current_url}"
+                elif "net::ERR_CONNECTION_TIMED_OUT" in error_message:
+                    error_message = f"Connection timed out while trying to reach: {current_url}"
+                elif "AWS" in error_message:
+                    error_message = f"Website hosted on AWS is not accessible or requires authentication: {current_url}"
+                elif any(host in error_message for host in ["cloudfront", "s3.amazonaws", "amazonaws.com"]):
+                    error_message = f"Website is hosted on AWS but is not properly configured or accessible: {current_url}"
+                
                 results.append({
                     "url": current_url,
-                    "detected_tech": ["Error"],
-                    "content": str(e),
-                    "raw_html": ""
+                    "error": error_message,
+                    "detected_tech": [],
+                    "tech_categories": {},
+                    "content": "",
+                    "raw_html": "",
+                    "links": [],
+                    "images": [],
+                    "metadata": {
+                        "title": None,
+                        "meta_description": None,
+                        "meta_keywords": None
+                    }
                 })
 
         browser.close()
@@ -307,17 +520,72 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
     return results
 
 async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict]:
-    start_url = normalize_url(start_url)
-    
-    # Create a process pool with just one process to run Playwright
-    with multiprocessing.Pool(1) as pool:
-        # Run the scraping in a separate process
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,  # Uses default executor
-            partial(pool.apply, _scrape_single_process, (start_url, max_pages))
-        )
+    try:
+        # Validate and normalize URL
+        start_url = normalize_url(start_url)
+        parsed_url = urllib.parse.urlparse(start_url)
         
-    return result
+        # First do a quick check if the domain resolves
+        import socket
+        try:
+            socket.gethostbyname(parsed_url.netloc)
+        except (socket.gaierror, socket.error):
+            return [{
+                "url": start_url,
+                "error": f"Domain not found: {parsed_url.netloc}",
+                "detected_tech": [],
+                "tech_categories": {},
+                "content": "",
+                "links": [],
+                "images": [],
+                "metadata": {
+                    "title": None,
+                    "meta_description": None,
+                    "meta_keywords": None
+                }
+            }]
+        
+        # Create a process pool with just one process to run Playwright
+        with multiprocessing.Pool(1) as pool:
+            # Run the scraping in a separate process
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,  # Uses default executor
+                partial(pool.apply, _scrape_single_process, args=(start_url, max_pages))
+            )
+            
+        return result
+    except ValueError as e:
+        # Handle URL validation errors
+        return [{
+            "url": start_url,
+            "error": str(e),
+            "detected_tech": [],
+            "tech_categories": {},
+            "content": "",
+            "links": [],
+            "images": [],
+            "metadata": {
+                "title": None,
+                "meta_description": None,
+                "meta_keywords": None
+            }
+        }]
+    except Exception as e:
+        # Handle any other unexpected errors
+        return [{
+            "url": start_url,
+            "error": f"Unexpected error: {str(e)}",
+            "detected_tech": [],
+            "tech_categories": {},
+            "content": "",
+            "links": [],
+            "images": [],
+            "metadata": {
+                "title": None,
+                "meta_description": None,
+                "meta_keywords": None
+            }
+        }]
 
     return results
 
@@ -327,85 +595,237 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
 # Formatting Output for Different Types
 # --------------------------
 
-def format_json_output(markdown_content: str) -> str:
-    # Only add gaps inside markdown (not in JSON formatting itself)
-    markdown_with_gaps = markdown_content.replace("\n", "\n\n")
+def format_json_output(results: List[Dict]) -> str:
+    if not results or len(results) == 0:
+        return json.dumps({
+            "json": {},
+            "markdown": "",
+            "html": "",
+            "links": [],
+            "summary": "",
+            "metadata": {
+                "viewport": "",
+                "description": "",
+                "favicon": "",
+                "title": "",
+                "language": "en",
+                "sourceURL": "",
+                "url": "",
+                "statusCode": 404,
+                "contentType": "",
+                "proxyUsed": "basic",
+                "cacheState": "miss",
+                "creditsUsed": 1
+            }
+        }, indent=2, ensure_ascii=False)
 
-    json_string = json.dumps({"markdown": markdown_with_gaps}, indent=2, ensure_ascii=False)
-    return json_string
+    r = results[0]  # Take first result
+    
+    # Extract company info from content
+    content = r.get('content', '')
+    metadata = r.get('metadata', {})
+    
+    # Build company info
+    company_info = {
+        "company_name": metadata.get('title', 'Unknown'),
+        "company_description": metadata.get('meta_description', '')
+    }
+    
+    # Get links and clean them
+    links = []
+    for link in r.get('links', []):
+        url = link.get('url', '')
+        if url and not url.startswith('#') and not url.startswith('javascript:'):
+            links.append(url)
+    
+    # Build full response
+    response = {
+        "json": company_info,
+        "markdown": format_markdown_output([r]),
+        "html": r.get('raw_html', ''),
+        "links": links,
+        "summary": content[:500] + ('...' if len(content) > 500 else ''),
+        "metadata": {
+            "viewport": "width=device-width, initial-scale=1.0",
+            "description": metadata.get('meta_description', ''),
+            "favicon": r.get('favicon', ''),
+            "title": metadata.get('title', ''),
+            "language": "en",
+            "scrapeId": f"{uuid.uuid4()}",
+            "sourceURL": urllib.parse.urlparse(r.get('url', '')).netloc,
+            "url": r.get('url', ''),
+            "statusCode": 200 if not r.get('error') else 404,
+            "contentType": "text/html; charset=utf-8",
+            "proxyUsed": "basic",
+            "cacheState": "miss",
+            "creditsUsed": 5
+        }
+    }
+    
+    return json.dumps(response, indent=2, ensure_ascii=False)
 
 
 def format_markdown_output(results: List[Dict]) -> str:
+    """Format scraping results as markdown with custom styling."""
+    if not results or len(results) == 0:
+        return ""
+        
+    r = results[0]  # Take first result
+    if 'error' in r:
+        return f"# Error\n\n**Error Message**: {r['error']}\n\n---\n"
+
+    # Initialize outputs
     md_output = []
-    for r in results:
-        if not isinstance(r, dict):
+    content = r.get('content', '')
+    metadata = r.get('metadata', {})
+    images = r.get('images', [])
+    links = r.get('links', [])
+    tech_categories = r.get('tech_categories', {})
+    url = r.get('url', '')
+    
+    # Get logo and title
+    logo_url = next((img.get('url', '') for img in images if img.get('url', '') and 'logo' in img['url'].lower()), 
+                    '')
+    title = metadata.get('title', '')
+    
+    # Title and Navigation
+    md_output.extend([
+        f"![logo]({logo_url})\n",
+        "# " + title,
+        "\n\n"
+    ])
+    
+    # Process content sections
+    content_lines = content.split('\n')
+    current_section = []
+    
+    for line in content_lines:
+        line = line.strip()
+        
+        if not line:  # Empty line handling
+            if current_section:
+                md_output.append("\n".join(current_section) + "\n\n")
+                current_section = []
             continue
-
-        url = r.get('url', 'Unknown URL')
-        soup = BeautifulSoup(r.get('raw_html', ''), 'html.parser')
-        detected_tech = r.get('detected_tech', [])
-
-        # Site Header
-        md_output.append(f"# Website Analysis: {url}\n")
+            
+        if line.startswith('#'):  # Heading handling
+            if current_section:
+                md_output.append("\n".join(current_section) + "\n\n")
+                current_section = []
+            if line.startswith('# '):  # Main heading
+                line = line.replace('with AI Agents by', '\nwith AI Agents by')
+            current_section.append(line)
+        else:  # Content handling
+            current_section.append(line)
+    
+    # Add final section if exists
+    if current_section:
+        md_output.append("\n".join(current_section) + "\n\n")
+    
+    # Tech stack section
+    md_output.append("## We build with\n\n")
+    tech_stack = tech_categories.get('frameworks', []) + tech_categories.get('libraries', [])
+    if tech_stack:
+        md_output.append(" • ".join(tech_stack) + " •\n\n")
+    
+    content = r.get('content', '')
+    
+    # Extract logo
+    logo_url = next((img['url'] for img in images if 'logo' in img['url'].lower()), '')
+    title = metadata.get('title', '')
+    
+    # Header with logo
+    if logo_url:
+        md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
+    
+    # Navigation Menu
+    nav_items = []
+    for link in links:
+        if isinstance(link, dict) and 'url' in link and 'text' in link:
+            if '/works' in link['url'].lower():
+                nav_items.append(f"[Our Works]({link['url']})")
+            elif '/labs' in link['url'].lower():
+                nav_items.append(f"[Labs]({link['url']})")
+            elif '/about' in link['url'].lower():
+                nav_items.append(f"[About Us]({link['url']})")
+    if nav_items:
+        md_output.append(" ".join(nav_items) + "\n\n")
+    
+    # Connect Button
+    connect_link = next((link for link in links if isinstance(link, dict) and '/contact' in link.get('url', '').lower()), None)
+    if connect_link:
+        md_output.append(f"[Connect]({connect_link['url']})\n\n")
+    
+    # Repeat logo for mobile
+    if logo_url:
+        md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
+    
+    # Innovation tagline
+    md_output.append("Innovation. Automation. Growth.\n\n")
+    
+    # Main content
+    lines = content.split('\n')
+    current_section = []
+    
+    # Process content by sections
+    for line in lines:
+        line = line.strip()
         
-        # Site Title
-        title = soup.find('title')
-        if title:
-            md_output.append(f"## {title.get_text(strip=True)}\n")
-
-        # Technology Stack Section
-        md_output.append("\n## Technology Stack\n")
+        # Skip empty lines between sections
+        if not line:
+            if current_section:
+                section_text = "\n".join(current_section)
+                md_output.append(f"{section_text}\n\n")
+                current_section = []
+            continue
         
-        # Frontend Technologies
-        frontend_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Frontend')]), [])]
-        if frontend_tech:
-            md_output.append("\n### Frontend\n")
-            for tech in frontend_tech:
-                md_output.append(f"- **{tech}**\n")
-
-        # Backend Technologies
-        backend_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Backend')]), [])]
-        if backend_tech:
-            md_output.append("\n### Backend\n")
-            for tech in backend_tech:
-                md_output.append(f"- **{tech}**\n")
-
-        # Database Technologies
-        db_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Databases')]), [])]
-        if db_tech:
-            md_output.append("\n### Databases\n")
-            for tech in db_tech:
-                md_output.append(f"- **{tech}**\n")
-
-        # Hosting/CDN Technologies
-        hosting_tech = [tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('CDNs / Hosting')]), [])]
-        if hosting_tech:
-            md_output.append("\n### Hosting & CDN\n")
-            for tech in hosting_tech:
-                md_output.append(f"- **{tech}**\n")
-
-        # Analytics and Other Technologies
-        other_tech = [tech for tech in detected_tech if tech not in frontend_tech + backend_tech + db_tech + hosting_tech]
-        if other_tech:
-            md_output.append("\n### Other Technologies\n")
-            for tech in other_tech:
-                md_output.append(f"- **{tech}**\n")
-
-        # Content Section
-        md_output.append("\n## Content Preview\n")
-        content = r.get('content', 'No content available.')
-        md_output.append(f"```\n{content[:500]}{'...' if len(content) > 500 else ''}\n```\n")
-
-        # Navigation Links
-        links = r.get('links', [])
-        if links:
-            md_output.append("\n## Site Navigation\n")
-            for link in links[:10]:  # Limit to first 10 links
-                md_output.append(f"- [{link}]({link})\n")
-
-        md_output.append("\n---\n\n")
-
+        # Handle headings
+        if line.startswith('#'):
+            if current_section:
+                md_output.append("\n".join(current_section) + "\n\n")
+                current_section = []
+            
+            # Format main heading
+            if line.startswith('# '):
+                line = line.replace('with AI Agents by', '\nwith AI Agents by')
+            
+            current_section.append(line)
+        
+        # Handle special sections
+        elif line == "Book a call":
+            current_section.append("\nBook a call\n")
+        
+        # Handle feature descriptions
+        elif any(feature in line for feature in ["AI-Powered Content", "Social Automation", "Ecommerce Ops", 
+                                               "Smart CRM & Leads", "Visual Dashboards"]):
+            if current_section:
+                md_output.append("\n".join(current_section) + "\n\n")
+                current_section = []
+            current_section.append(f"### {line}")
+        else:
+            current_section.append(line)
+    
+    if current_section:
+        md_output.append("\n".join(current_section) + "\n\n")
+    
+    # Technologies section
+    md_output.append("We build with\n\n")
+    tech_stack = [
+        "GPT-4",
+        "Make.com",
+        "WhatsApp API",
+        "Notion",
+        "Airtable",
+        "Google Sheets"
+    ]
+    
+    md_output.append(" •\n\n".join(tech_stack) + " •")
+    
     return "".join(md_output)
+
+    
+
+
 
 
 def format_text_output(results: List[Dict]) -> str:
@@ -418,29 +838,67 @@ def format_text_output(results: List[Dict]) -> str:
         if not isinstance(url, str):
             url = str(url)
 
-        soup = BeautifulSoup(r.get('raw_html', ''), 'html.parser')
-        title = soup.find('title')
-        title_text = title.get_text(strip=True) if title else 'No Title'
+        # Check for errors first
+        if 'error' in r:
+            text_output.extend([
+                f"Website: {url}",
+                "Status: Error",
+                f"Error Message: {r['error']}",
+                "\n" + "="*50 + "\n"
+            ])
+            continue
 
-        detected_tech = r.get('detected_tech', ['Unknown'])
+        metadata = r.get('metadata', {})
+        title = metadata.get('title', 'No Title')
+        meta_desc = metadata.get('meta_description', 'No description available')
+
+        tech_categories = r.get('tech_categories', {})
         content = r.get('content', 'No content available.')
+        links = r.get('links', [])
+        images = r.get('images', [])
+
         if not isinstance(content, str):
             content = str(content)
 
         # Structure the output in a more readable format
         text_output.extend([
             f"Website: {url}",
-            f"Title: {title_text}",
+            f"Title: {title}",
+            f"Description: {meta_desc}",
             "\nTechnology Stack:",
-            "----------------",
-            "Frontend:",
-            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Frontend')]), [])] or ['None detected']),
-            "\nBackend:",
-            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Backend')]), [])] or ['None detected']),
-            "\nDatabases:",
-            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('Databases')]), [])] or ['None detected']),
-            "\nHosting/CDN:",
-            "  " + ", ".join([tech for tech in detected_tech if tech in TECH_SIGNATURES.keys() and tech in next(iter([k for k, v in TECH_SIGNATURES.items() if k.startswith('CDNs / Hosting')]), [])] or ['None detected']),
+            "----------------"
+        ])
+
+        # Add tech categories
+        for category, techs in tech_categories.items():
+            if techs:
+                text_output.append(f"\n{category.title()}:")
+                text_output.append("  " + ", ".join(techs))
+
+        # Add links section
+        if links:
+            text_output.extend([
+                "\nLinks Found:",
+                "------------"
+            ])
+            for link in links[:10]:  # Show first 10 links
+                text_output.append(f"  • {link['text']}: {link['url']}")
+            if len(links) > 10:
+                text_output.append(f"  ... and {len(links) - 10} more links")
+
+        # Add images section
+        if images:
+            text_output.extend([
+                "\nImages Found:",
+                "-------------"
+            ])
+            for img in images[:10]:  # Show first 10 images
+                text_output.append(f"  • {img['alt'] or 'No description'}: {img['url']}")
+            if len(images) > 10:
+                text_output.append(f"  ... and {len(images) - 10} more images")
+
+        # Add content preview
+        text_output.extend([
             "\nContent Preview:",
             "---------------",
             content[:1000] + ('...' if len(content) > 1000 else ''),
