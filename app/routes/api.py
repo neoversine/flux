@@ -118,7 +118,7 @@ async def use_api(
         "plan_limit": plan_limit,
         "last_day_reset": usage["last_day_reset"],
         "last_month_reset": usage["last_month_reset"],
-        "result1": format_json_output(format_markdown_output(results)),
+        "result1": format_json_output(results),
         "result2": format_text_output(results),
         "result3": format_markdown_output(results)
     }
