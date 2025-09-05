@@ -13,6 +13,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as ImageFlowable, Flowable
 )
@@ -60,10 +62,10 @@ class CurrencyFormatter:
     def format_money(self, amount: Union[Decimal, float, str], currency_symbol: str = DEFAULT_CURRENCY) -> str:
         try:
             amount_decimal = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            return f"{currency_symbol}{amount_decimal:,.2f}"
+            return f"{amount_decimal:,.2f} INR"
         except Exception as e:
             logger.error(f"Error formatting currency amount {amount}: {e}")
-            return f"{currency_symbol}{amount}"
+            return f"{amount} INR"
 
 # Ensure directories exist
 os.makedirs(PDF_DIR, exist_ok=True)
@@ -173,24 +175,42 @@ class InvoiceStyleManager:
     
     def _create_custom_styles(self):
         """Create custom paragraph styles."""
+        # Register a Unicode font that supports the Rupee symbol
+        # This path might vary, or the font might not be present.
+        # User might need to provide a specific .ttf file or ensure it's installed.
+        unicode_font_path = "C:\\Windows\\Fonts\\ARIALUNI.TTF" # Common path for Arial Unicode MS on Windows
+        self.default_font = 'Helvetica' # Fallback
+
+        if os.path.exists(unicode_font_path):
+            try:
+                pdfmetrics.registerFont(TTFont('CustomUnicodeFont', unicode_font_path))
+                self.default_font = 'CustomUnicodeFont'
+                logger.info(f"Registered custom Unicode font from {unicode_font_path}")
+            except Exception as e:
+                logger.warning(f"Could not register font from {unicode_font_path}: {e}, falling back to Helvetica.")
+        else:
+            logger.warning(f"Unicode font not found at {unicode_font_path}, falling back to Helvetica. Rupee symbol might not display correctly.")
+
         self.normal = self.styles["Normal"]
         self.normal.spaceAfter = 1 * mm
         self.normal.fontSize = 9
         self.normal.leading = 11
+        self.normal.fontName = self.default_font
 
         self.small_normal = ParagraphStyle(
             "small_normal",
             parent=self.normal,
             fontSize=8,
             spaceAfter=0.5 * mm,
-            leading=10
+            leading=10,
+            fontName=self.default_font
         )
         
         self.small_bold = ParagraphStyle(
             "small_bold", 
             parent=self.normal, 
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=1 * mm,
             leading=11
         )
@@ -199,7 +219,7 @@ class InvoiceStyleManager:
             "extra_small_bold",
             parent=self.normal,
             fontSize=7,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=9
         )
@@ -207,7 +227,7 @@ class InvoiceStyleManager:
             "extra_medium_bold",
             parent=self.normal,
             fontSize=10,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             spaceRight=0, # Removed spaceRight to allow better centering
             leading=9
@@ -217,6 +237,7 @@ class InvoiceStyleManager:
             "extra_small_normal",
             parent=self.normal,
             fontSize=7,
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=9
         )
@@ -224,6 +245,7 @@ class InvoiceStyleManager:
             "extra_medium_normal",
             parent=self.normal,
             fontSize=9,
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=9
         )
@@ -233,14 +255,15 @@ class InvoiceStyleManager:
             parent=self.normal, 
             alignment=2,  # Right alignment
             fontSize=10,
-            leading=12
+            leading=12,
+            fontName=self.default_font
         )
         
         self.invoice_title_style = ParagraphStyle(
             "invoice_title_style",
             parent=self.styles["h1"],
             fontSize=10, # Smaller font size for "Tax Invoice"
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=3 * mm,
             leading=16,
             alignment=0,
@@ -254,7 +277,7 @@ class InvoiceStyleManager:
             "company_name_style",
             parent=self.normal,
             fontSize=12,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=1 * mm,
             leading=11
         )
@@ -263,7 +286,7 @@ class InvoiceStyleManager:
             "company_name_large_bold_style",
             parent=self.styles["h1"],
             fontSize=16,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=0 * mm, # Reduced space after for better alignment
             leading=18,
             alignment=0 # Left alignment
@@ -273,7 +296,7 @@ class InvoiceStyleManager:
             "company_info_label_style",
             parent=self.normal,
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=11
         )
@@ -282,6 +305,7 @@ class InvoiceStyleManager:
             "company_info_value_style",
             parent=self.normal,
             fontSize=9,
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=11
         )
@@ -290,7 +314,7 @@ class InvoiceStyleManager:
             "section_title_style",
             parent=self.normal,
             fontSize=10,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             spaceAfter=3 * mm,
             leading=12,
             backColor=colors.HexColor("#e8e8e8"),
@@ -300,6 +324,7 @@ class InvoiceStyleManager:
             "client_info_style",
             parent=self.normal,
             fontSize=9,
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=11
         )
@@ -308,7 +333,7 @@ class InvoiceStyleManager:
             "table_header_style",
             parent=self.normal,
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             alignment=1,
             spaceAfter=2 * mm,
             spaceBefore=2 * mm,
@@ -319,6 +344,7 @@ class InvoiceStyleManager:
             "table_data_style",
             parent=self.normal,
             fontSize=9,
+            fontName=self.default_font,
             spaceAfter=1 * mm,
             spaceBefore=1 * mm,
             leading=11
@@ -328,7 +354,7 @@ class InvoiceStyleManager:
             "total_label_style",
             parent=self.normal,
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             alignment=2,
             spaceAfter=1 * mm,
             leading=11
@@ -338,7 +364,7 @@ class InvoiceStyleManager:
             "total_value_style",
             parent=self.normal,
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             alignment=2,
             spaceAfter=1 * mm,
             leading=11
@@ -348,6 +374,7 @@ class InvoiceStyleManager:
             "footer_text_style",
             parent=self.normal,
             fontSize=8,
+            fontName=self.default_font,
             spaceAfter=0.5 * mm,
             leading=10
         )
@@ -356,11 +383,11 @@ class InvoiceStyleManager:
             "authorised_signatory_style",
             parent=self.normal,
             fontSize=9,
-            fontName="Helvetica-Bold",
+            fontName=self.default_font,
             alignment=2,
             spaceBefore=10 * mm,
             leading=11,
-            rightIndent=10 # Ensure no right indent
+            rightIndent=10
         )
 
 
