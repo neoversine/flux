@@ -749,11 +749,6 @@ def format_markdown_output(results: List[Dict]) -> str:
     
     return "".join(md_output)
 
-    
-
-
-
-
 def format_text_output(results: List[Dict]) -> str:
     text_output = []
     for r in results:
@@ -767,9 +762,7 @@ def format_text_output(results: List[Dict]) -> str:
         # Check for errors first
         if 'error' in r:
             text_output.extend([
-                f"Website: {url}",
-                "Status: Error",
-                f"Error Message: {r['error']}",
+                f"Website: {url}"
                 "\n" + "="*50 + "\n"
             ])
             continue
