@@ -641,6 +641,7 @@ class InvoicePDFGenerator:
             [
                 Paragraph("Sr.No", self.style_manager.table_header_style),
                 Paragraph("Items", self.style_manager.table_header_style),
+                Paragraph("HSN/SAC", self.style_manager.table_header_style), # Added HSN/SAC header
                 Paragraph("Qty", self.style_manager.table_header_style),
                 Paragraph("Unit Price", self.style_manager.table_header_style),
                 Paragraph("Amount", self.style_manager.table_header_style)
@@ -652,10 +653,12 @@ class InvoicePDFGenerator:
             quantity = Decimal(str(item.get("qty", 0)))
             unit_price = Decimal(str(item.get("unit_rate", 0)))
             amount = Decimal(str(item.get("amount", 0))) # Use 'amount' from new payload
+            hsn_code = item.get("hsn_code", "") # Get HSN code
 
             table_data.append([
                 Paragraph(str(i + 1), self.style_manager.table_data_style),
                 Paragraph(item.get("description", ""), self.style_manager.table_data_style),
+                Paragraph(hsn_code, self.style_manager.table_data_style), # Added HSN code
                 Paragraph(str(quantity), self.style_manager.table_data_style),
                 Paragraph(self.currency_formatter.format_money(unit_price, currency), self.style_manager.table_data_style),
                 Paragraph(self.currency_formatter.format_money(amount, currency), self.style_manager.table_data_style)
@@ -663,7 +666,7 @@ class InvoicePDFGenerator:
         
         items_table = Table(
             table_data, 
-            colWidths=[10 * mm, 70 * mm, 20 * mm, 35 * mm, 35 * mm], # Adjusted column widths for new headers
+            colWidths=[10 * mm, 50 * mm, 20 * mm, 20 * mm, 35 * mm, 35 * mm], # Adjusted column widths for new HSN/SAC column
             repeatRows=1 # Repeat header row on new pages
         )
         items_table.setStyle(TableStyle([
