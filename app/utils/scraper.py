@@ -69,36 +69,39 @@ def normalize_url(input_url: str) -> str:
 
 
 def get_text_from_html(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    # Remove potentially noisy tags
-    for element in soup(['script', 'style', 'noscript', 'footer', 'header', 'form', 'button']):
-        tag = cast(Tag, element)
-        tag.decompose()
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        # Remove potentially noisy tags
+        for element in soup(['script', 'style', 'noscript', 'footer', 'header', 'form', 'button']):
+            tag = cast(Tag, element)
+            tag.decompose()
 
-    # Convert relevant tags to markdown-friendly format - This part might be redundant or need adjustment based on desired markdown output
-    # Let's rely on BeautifulSoup's get_text with a separator first.
-    for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'ul', 'ol', 'blockquote']):
-       tag = cast(Tag, element)
-       if tag.name.startswith('h'):
-            tag.insert_before(f"\n{'#' * int(tag.name[1])} ")
-            tag.insert_after("\n")
-       elif tag.name == 'p':
-            tag.insert_before("\n")
-            tag.insert_after("\n")
-       elif tag.name in ['li']:
-            tag.insert_before("* ")
-            tag.insert_after("\n")
-       elif tag.name in ['ul', 'ol', 'blockquote']:
-            tag.insert_before("\n")
-            tag.insert_after("\n")
+        # Convert relevant tags to markdown-friendly format - This part might be redundant or need adjustment based on desired markdown output
+        # Let's rely on BeautifulSoup's get_text with a separator first.
+        for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'ul', 'ol', 'blockquote']):
+           tag = cast(Tag, element)
+           if tag.name.startswith('h'):
+                tag.insert_before(f"\n{'#' * int(tag.name[1])} ")
+                tag.insert_after("\n")
+           elif tag.name == 'p':
+                tag.insert_before("\n")
+                tag.insert_after("\n")
+           elif tag.name in ['li']:
+                tag.insert_before("* ")
+                tag.insert_after("\n")
+           elif tag.name in ['ul', 'ol', 'blockquote']:
+                tag.insert_before("\n")
+                tag.insert_after("\n")
 
 
-    # Get text and clean up extra whitespace, using \n as separator
-    content = soup.get_text(separator='\n', strip=True)
-    content = re.sub(r'\n{3,}', '\n\n', content) # Reduce multiple newlines to at most two
-    # content = re.sub(r'\s{2,}', ' ', content) # This might remove intended spaces within lines
+        # Get text and clean up extra whitespace, using \n as separator
+        content = soup.get_text(separator='\n', strip=True)
+        content = re.sub(r'\n{3,}', '\n\n', content) # Reduce multiple newlines to at most two
+        # content = re.sub(r'\s{2,}', ' ', content) # This might remove intended spaces within lines
 
-    return content.strip()
+        return content.strip()
+    except Exception as e:
+        return f"Error extracting text from HTML: {str(e)}"
 
 # --------------------------
 # Tech detection dictionary
@@ -286,23 +289,36 @@ def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
         except Exception:
             return False
 
-    try:
-        subprocess.run(['playwright', 'install'], check=True)
-    except Exception as e:
-        print(f"Warning: Failed to install playwright: {str(e)}")
-
     with sync_playwright() as p:
-        browser = p.firefox.launch(headless=True)
-        context = browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
-            java_script_enabled=True,
-            accept_downloads=True,
-            has_touch=False,
-            is_mobile=False,
-            locale='en-US'
-        )
-        page = context.new_page()
+        try:
+            browser = p.firefox.launch(headless=True)
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
+                java_script_enabled=True,
+                accept_downloads=True,
+                has_touch=False,
+                is_mobile=False,
+                locale='en-US'
+            )
+            page = context.new_page()
+        except Exception as e:
+            results.append({
+                "url": start_url,
+                "error": f"Failed to launch browser: {str(e)}. Ensure Playwright dependencies are installed on the VPS.",
+                "detected_tech": [],
+                "tech_categories": {},
+                "content": "",
+                "raw_html": "",
+                "links": [],
+                "images": [],
+                "metadata": {
+                    "title": None,
+                    "meta_description": None,
+                    "meta_keywords": None
+                }
+            })
+            return results # Exit early if browser launch fails
         
         # Add error handling for common cloud hosting scenarios
         page.on("response", lambda response: handle_response_status(response))
@@ -535,7 +551,8 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
                 "error": f"Domain not found: {parsed_url.netloc}",
                 "detected_tech": [],
                 "tech_categories": {},
-                "content": "",
+                "content": None,
+                "raw_html": None,
                 "links": [],
                 "images": [],
                 "metadata": {
@@ -561,7 +578,8 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
             "error": str(e),
             "detected_tech": [],
             "tech_categories": {},
-            "content": "",
+            "content": None,
+            "raw_html": None,
             "links": [],
             "images": [],
             "metadata": {
@@ -577,7 +595,8 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
             "error": f"Unexpected error: {str(e)}",
             "detected_tech": [],
             "tech_categories": {},
-            "content": "",
+            "content": None,
+            "raw_html": None,
             "links": [],
             "images": [],
             "metadata": {
@@ -586,8 +605,6 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
                 "meta_keywords": None
             }
         }]
-
-    return results
 
 
 
