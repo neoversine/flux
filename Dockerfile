@@ -15,8 +15,18 @@ RUN apt-get update && apt-get install -y \
     libgbm1 \
     libgtk-3-0 \
     libasound2 \
+    libpangocairo-1.0-0 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxext6 \
+    libxfixes3 \
+    libxshmfence1 \
+    libdrm2 \
+    fonts-liberation \
+    libpango-1.0-0 \
+    libcairo2 \
     wget \
-    poppler-utils \ 
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
