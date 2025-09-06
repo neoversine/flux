@@ -15,8 +15,6 @@ from random import randint
 # --------------------------
 # Utility functions
 # --------------------------
-
-
 def handle_response_status(response):
     """Handle different response statuses and cloud hosting scenarios."""
     status = response.status
@@ -106,8 +104,6 @@ def get_text_from_html(html: str) -> str:
 # --------------------------
 # Tech detection dictionary
 # --------------------------
-
-
 TECH_SIGNATURES = {
     # Frontend
     "React": [r"id=['\"]root['\"]", r"react", r"react-dom"],
@@ -605,9 +601,6 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
                 "meta_keywords": None
             }
         }]
-
-
-
 # --------------------------
 # Formatting Output for Different Types
 # --------------------------
