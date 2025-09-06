@@ -597,70 +597,53 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
 
 def format_json_output(results: List[Dict]) -> str:
     if not results or len(results) == 0:
-        return json.dumps({
-            "json": {},
-            "markdown": "",
-            "html": "",
-            "links": [],
-            "summary": "",
-            "metadata": {
-                "viewport": "",
-                "description": "",
-                "favicon": "",
-                "title": "",
-                "language": "en",
-                "sourceURL": "",
-                "url": "",
-                "statusCode": 404,
-                "contentType": "",
-                "proxyUsed": "basic",
-                "cacheState": "miss",
-                "creditsUsed": 1
-            }
-        }, indent=2, ensure_ascii=False)
+        return json.dumps({}, indent=2, ensure_ascii=False)
 
     r = results[0]  # Take first result
     
-    # Extract company info from content
-    content = r.get('content', '')
+    content = r.get('content')
     metadata = r.get('metadata', {})
     
-    # Build company info
     company_info = {
-        "company_name": metadata.get('title', 'Unknown'),
-        "company_description": metadata.get('meta_description', '')
+        "company_name": metadata.get('title'),
+        "company_description": metadata.get('meta_description')
     }
     
-    # Get links and clean them
     links = []
-    for link in r.get('links', []):
-        url = link.get('url', '')
+    for link_data in r.get('links', []):
+        url = link_data.get('url')
         if url and not url.startswith('#') and not url.startswith('javascript:'):
             links.append(url)
     
-    # Build full response
+    response_metadata = {
+        "description": metadata.get('meta_description'),
+        "favicon": r.get('favicon'),
+        "title": metadata.get('title'),
+        "language": "en", # Defaulting to 'en' as it's a common practice and usually detected
+        "scrapeId": str(uuid.uuid4()),
+        "sourceURL": urllib.parse.urlparse(r.get('url', '')).netloc if r.get('url') else None,
+        "url": r.get('url'),
+        "statusCode": r.get('metadata', {}).get('statusCode'),
+        "contentType": "text/html; charset=utf-8", # This is a reasonable default for web scraping
+        "proxyUsed": "basic", # This is an internal detail, can be defaulted
+        "cacheState": "miss", # This is an internal detail, can be defaulted
+        "creditsUsed": 5 # This is an internal detail, can be defaulted
+    }
+    
+    # Remove None values from metadata
+    response_metadata = {k: v for k, v in response_metadata.items() if v is not None}
+
     response = {
         "json": company_info,
         "markdown": format_markdown_output([r]),
-        "html": r.get('raw_html', ''),
+        "html": r.get('raw_html'),
         "links": links,
-        "summary": content[:500] + ('...' if len(content) > 500 else ''),
-        "metadata": {
-            "viewport": "width=device-width, initial-scale=1.0",
-            "description": metadata.get('meta_description', ''),
-            "favicon": r.get('favicon', ''),
-            "title": metadata.get('title', ''),
-            "language": "en",
-            "scrapeId": f"{uuid.uuid4()}",
-            "sourceURL": urllib.parse.urlparse(r.get('url', '')).netloc,
-            "url": r.get('url', ''),
-            "statusCode": 200 if not r.get('error') else 404,
-            "contentType": "text/html; charset=utf-8",
-            "proxyUsed": "basic",
-            "cacheState": "miss",
-            "creditsUsed": 5
-        }
+        "summary": content[:500] + ('...' if content and len(content) > 500 else '') if content else None,
+        "metadata": response_metadata
     }
+    
+    # Remove None values from the main response
+    response = {k: v for k, v in response.items() if v is not None}
     
     return json.dumps(response, indent=2, ensure_ascii=False)
 
@@ -674,71 +657,60 @@ def format_markdown_output(results: List[Dict]) -> str:
     if 'error' in r:
         return f"# Error\n\n**Error Message**: {r['error']}\n\n---\n"
 
-    # Initialize outputs
     md_output = []
-    content = r.get('content', '')
+    content = r.get('content')
     metadata = r.get('metadata', {})
     images = r.get('images', [])
     links = r.get('links', [])
     tech_categories = r.get('tech_categories', {})
-    url = r.get('url', '')
+    url = r.get('url')
     
-    # Get logo and title
-    logo_url = next((img.get('url', '') for img in images if img.get('url', '') and 'logo' in img['url'].lower()), 
-                    '')
-    title = metadata.get('title', '')
+    logo_url = next((img.get('url') for img in images if img.get('url') and 'logo' in img['url'].lower()), None)
+    title = metadata.get('title')
     
-    # Title and Navigation
-    md_output.extend([
-        f"![logo]({logo_url})\n",
-        "# " + title,
-        "\n\n"
-    ])
-    
-    # Process content sections
-    content_lines = content.split('\n')
-    current_section = []
-    
-    for line in content_lines:
-        line = line.strip()
-        
-        if not line:  # Empty line handling
-            if current_section:
-                md_output.append("\n".join(current_section) + "\n\n")
-                current_section = []
-            continue
-            
-        if line.startswith('#'):  # Heading handling
-            if current_section:
-                md_output.append("\n".join(current_section) + "\n\n")
-                current_section = []
-            if line.startswith('# '):  # Main heading
-                line = line.replace('with AI Agents by', '\nwith AI Agents by')
-            current_section.append(line)
-        else:  # Content handling
-            current_section.append(line)
-    
-    # Add final section if exists
-    if current_section:
-        md_output.append("\n".join(current_section) + "\n\n")
-    
-    # Tech stack section
-    md_output.append("## We build with\n\n")
-    tech_stack = tech_categories.get('frameworks', []) + tech_categories.get('libraries', [])
-    if tech_stack:
-        md_output.append(" • ".join(tech_stack) + " •\n\n")
-    
-    content = r.get('content', '')
-    
-    # Extract logo
-    logo_url = next((img['url'] for img in images if 'logo' in img['url'].lower()), '')
-    title = metadata.get('title', '')
-    
-    # Header with logo
     if logo_url:
+        md_output.append(f"![logo]({logo_url})\n")
+    if title:
+        md_output.append(f"# {title}\n\n")
+    
+    if content:
+        content_lines = content.split('\n')
+        current_section = []
+        
+        for line in content_lines:
+            line = line.strip()
+            
+            if not line:
+                if current_section:
+                    md_output.append("\n".join(current_section) + "\n\n")
+                    current_section = []
+                continue
+                
+            if line.startswith('#'):
+                if current_section:
+                    md_output.append("\n".join(current_section) + "\n\n")
+                    current_section = []
+                if line.startswith('# '):
+                    line = line.replace('', '\n')
+                current_section.append(line)
+            else:
+                current_section.append(line)
+        
+        if current_section:
+            md_output.append("\n".join(current_section) + "\n\n")
+    
+    all_detected_tech = []
+    for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
+        if tech_categories.get(category):
+            all_detected_tech.extend(tech_categories[category])
+    
+    if all_detected_tech:
+        md_output.append("## We build with\n\n")
+        md_output.append(" • ".join(sorted(list(set(all_detected_tech)))) + " •\n\n")
+    
+    if logo_url and title and url:
         md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
     
-    # Navigation Menu
     nav_items = []
     for link in links:
         if isinstance(link, dict) and 'url' in link and 'text' in link:
@@ -747,79 +719,16 @@ def format_markdown_output(results: List[Dict]) -> str:
             elif '/labs' in link['url'].lower():
                 nav_items.append(f"[Labs]({link['url']})")
             elif '/about' in link['url'].lower():
-                nav_items.append(f"[About Us]({link['url']})")
+                nav_items.append(f"[]({link['url']})")
     if nav_items:
         md_output.append(" ".join(nav_items) + "\n\n")
     
-    # Connect Button
     connect_link = next((link for link in links if isinstance(link, dict) and '/contact' in link.get('url', '').lower()), None)
     if connect_link:
         md_output.append(f"[Connect]({connect_link['url']})\n\n")
     
-    # Repeat logo for mobile
-    if logo_url:
+    if logo_url and title and url:
         md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
-    
-    # Innovation tagline
-    md_output.append("Innovation. Automation. Growth.\n\n")
-    
-    # Main content
-    lines = content.split('\n')
-    current_section = []
-    
-    # Process content by sections
-    for line in lines:
-        line = line.strip()
-        
-        # Skip empty lines between sections
-        if not line:
-            if current_section:
-                section_text = "\n".join(current_section)
-                md_output.append(f"{section_text}\n\n")
-                current_section = []
-            continue
-        
-        # Handle headings
-        if line.startswith('#'):
-            if current_section:
-                md_output.append("\n".join(current_section) + "\n\n")
-                current_section = []
-            
-            # Format main heading
-            if line.startswith('# '):
-                line = line.replace('with AI Agents by', '\nwith AI Agents by')
-            
-            current_section.append(line)
-        
-        # Handle special sections
-        elif line == "Book a call":
-            current_section.append("\nBook a call\n")
-        
-        # Handle feature descriptions
-        elif any(feature in line for feature in ["AI-Powered Content", "Social Automation", "Ecommerce Ops", 
-                                               "Smart CRM & Leads", "Visual Dashboards"]):
-            if current_section:
-                md_output.append("\n".join(current_section) + "\n\n")
-                current_section = []
-            current_section.append(f"### {line}")
-        else:
-            current_section.append(line)
-    
-    if current_section:
-        md_output.append("\n".join(current_section) + "\n\n")
-    
-    # Technologies section
-    md_output.append("We build with\n\n")
-    tech_stack = [
-        "GPT-4",
-        "Make.com",
-        "WhatsApp API",
-        "Notion",
-        "Airtable",
-        "Google Sheets"
-    ]
-    
-    md_output.append(" •\n\n".join(tech_stack) + " •")
     
     return "".join(md_output)
 
@@ -834,9 +743,9 @@ def format_text_output(results: List[Dict]) -> str:
         if not isinstance(r, dict):
             continue
 
-        url = r.get('url', 'Unknown URL')
-        if not isinstance(url, str):
-            url = str(url)
+        url = r.get('url')
+        if url is None:
+            continue # Skip if URL is not available
 
         # Check for errors first
         if 'error' in r:
@@ -849,61 +758,66 @@ def format_text_output(results: List[Dict]) -> str:
             continue
 
         metadata = r.get('metadata', {})
-        title = metadata.get('title', 'No Title')
-        meta_desc = metadata.get('meta_description', 'No description available')
+        title = metadata.get('title')
+        meta_desc = metadata.get('meta_description')
 
         tech_categories = r.get('tech_categories', {})
-        content = r.get('content', 'No content available.')
+        content = r.get('content')
         links = r.get('links', [])
         images = r.get('images', [])
 
-        if not isinstance(content, str):
-            content = str(content)
+        text_output.append(f"Website: {url}")
+        if title:
+            text_output.append(f"Title: {title}")
+        if meta_desc:
+            text_output.append(f"Description: {meta_desc}")
 
-        # Structure the output in a more readable format
-        text_output.extend([
-            f"Website: {url}",
-            f"Title: {title}",
-            f"Description: {meta_desc}",
-            "\nTechnology Stack:",
-            "----------------"
-        ])
+        all_techs = [tech for category_list in tech_categories.values() for tech in category_list]
+        if all_techs:
+            text_output.extend([
+                "\nTechnology Stack:",
+                "----------------"
+            ])
+            for category, techs in tech_categories.items():
+                if techs:
+                    text_output.append(f"\n{category.title()}:")
+                    text_output.append("  " + ", ".join(techs))
 
-        # Add tech categories
-        for category, techs in tech_categories.items():
-            if techs:
-                text_output.append(f"\n{category.title()}:")
-                text_output.append("  " + ", ".join(techs))
-
-        # Add links section
         if links:
             text_output.extend([
                 "\nLinks Found:",
                 "------------"
             ])
-            for link in links[:10]:  # Show first 10 links
-                text_output.append(f"  • {link['text']}: {link['url']}")
+            for link in links[:10]:
+                link_url = link.get('url')
+                link_text = link.get('text')
+                if link_url and link_text:
+                    text_output.append(f"  • {link_text}: {link_url}")
             if len(links) > 10:
                 text_output.append(f"  ... and {len(links) - 10} more links")
 
-        # Add images section
         if images:
             text_output.extend([
                 "\nImages Found:",
                 "-------------"
             ])
-            for img in images[:10]:  # Show first 10 images
-                text_output.append(f"  • {img['alt'] or 'No description'}: {img['url']}")
+            for img in images[:10]:
+                img_url = img.get('url')
+                img_alt = img.get('alt')
+                if img_url:
+                    text_output.append(f"  • {img_alt or 'No description'}: {img_url}")
             if len(images) > 10:
                 text_output.append(f"  ... and {len(images) - 10} more images")
 
-        # Add content preview
-        text_output.extend([
-            "\nContent Preview:",
-            "---------------",
-            content[:1000] + ('...' if len(content) > 1000 else ''),
-            "\n" + "="*50 + "\n"
-        ])
+        if content:
+            text_output.extend([
+                "\nContent Preview:",
+                "---------------",
+                content[:1000] + ('...' if len(content) > 1000 else ''),
+                "\n" + "="*50 + "\n"
+            ])
+        else:
+            text_output.append("\nNo content available.\n" + "="*50 + "\n")
     
     return "\n".join(text_output)
 
