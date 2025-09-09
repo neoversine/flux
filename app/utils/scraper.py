@@ -499,41 +499,41 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
     try:
         start_url = normalize_url(start_url)
         parsed_start_url = urllib.parse.urlparse(start_url)
-        socket.gethostbyname(parsed_start_url.netloc)
-        
+        socket.gethostbyname(parsed_start_url.netloc)  # Validate domain
+
         urls_to_visit = [start_url]
         visited_urls = set()
         all_results: List[Dict[str, Any]] = []
-        
-        with multiprocessing.Pool(1) as pool: # Use a pool for single process to manage browser lifecycle
-            while urls_to_visit and len(all_results) < max_pages:
-                current_url = urls_to_visit.pop(0)
-                if current_url in visited_urls:
-                    continue
-                
-                visited_urls.add(current_url)
-                
-                # Scrape the current page
-                page_result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    partial(pool.apply, _scrape_single_page, args=(current_url,))
-                )
-                
-                if page_result and not page_result.get('error'):
-                    all_results.append(page_result)
-                    
-                    # Add new internal links to the queue
-                    for link in page_result.get('internal_links_to_crawl', []):
-                        normalized_link = normalize_url(link)
+
+        while urls_to_visit and len(all_results) < max_pages:
+            current_url = urls_to_visit.pop(0)
+            if current_url in visited_urls:
+                continue
+
+            visited_urls.add(current_url)
+
+            # Scrape the current page sequentially
+            page_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                partial(_scrape_single_page, current_url)
+            )
+
+            all_results.append(page_result)
+
+            # Add new internal links to queue
+            for link in page_result.get('internal_links_to_crawl', []):
+                try:
+                    # Normalize and convert relative URLs
+                    normalized_link = normalize_url(link)
+                    parsed_link = urllib.parse.urlparse(normalized_link)
+                    if parsed_link.netloc == parsed_start_url.netloc:
                         if normalized_link not in visited_urls and normalized_link not in urls_to_visit:
                             urls_to_visit.append(normalized_link)
-                else:
-                    # If there's an error, still add it to results if it's the first page
-                    if current_url == start_url:
-                        all_results.append(page_result)
-        
+                except Exception:
+                    continue
+
         return all_results
-            
+
     except (ValueError, socket.gaierror, socket.error) as e:
         return [create_error_result(start_url, f"Invalid URL or domain not found: {str(e)}")]
     except Exception as e:
@@ -601,7 +601,7 @@ def format_json_output(results: List[Dict]) -> str:
 
 
 def format_markdown_output_single_page(r: Dict) -> str:
-    """Format a single page's scraping results as markdown, mirroring JSON structure."""
+    """Format a single page's scraping results as markdown with full content."""
     if r.get('error'):
         return (
             f"# Error on Page: {r.get('url', 'Unknown URL')}\n\n"
@@ -610,98 +610,99 @@ def format_markdown_output_single_page(r: Dict) -> str:
         )
 
     md_output = []
-    content = r.get('content')
+    content = r.get('content', '')
     metadata = r.get('metadata', {})
     images = r.get('images', [])
     links = r.get('links', [])
     tech_categories = r.get('tech_categories', {})
-    url = r.get('url')
+    url = r.get('url', '')
 
     md_output.append(f"## Scraped Page: {url}\n")
-    md_output.append("==================================================\n\n")
+    md_output.append("=" * 50 + "\n\n")
 
-    # Company Info (from metadata, mirroring 'json' key in JSON output)
+    # Company Info
     title = metadata.get('title')
     description = metadata.get('meta_description')
     if title:
-        md_output.append(f"### Company Information:\n")
+        md_output.append("### Company Information:\n")
         md_output.append(f"- **Company Name**: {title}\n")
         if description:
-            md_output.append(f"- **Company Description**: {description}\n\n")
-        else:
-            md_output.append("\n")
+            md_output.append(f"- **Company Description**: {description}\n")
+        md_output.append("\n")
 
-    # Summary
+    # Full content
     if content:
-        summary = content[:500] + ('...' if len(content) > 500 else '')
-        md_output.append("### Summary:\n")
-        md_output.append(f"{summary}\n\n")
+        md_output.append("### Full Content:\n")
+        md_output.append("-" * 16 + "\n")
+        md_output.append(content + "\n\n")
 
     # Links
     if links:
-        md_output.append("### Links:\n")
-        md_output.append("----------------\n")
-        internal_links = []
-        external_links = []
+        internal_links, external_links = [], []
         for link in links:
             if isinstance(link, dict) and 'url' in link and 'text' in link:
+                text = link.get('text', link.get('url'))
+                link_url = link.get('url')
                 if link.get('is_internal'):
-                    internal_links.append(f"- [{link['text']}]({link['url']})")
+                    internal_links.append(f"- [{text}]({link_url})")
                 else:
-                    external_links.append(f"- [{link['text']}]({link['url']})")
-        
+                    external_links.append(f"- [{text}]({link_url})")
+            elif isinstance(link, str):
+                external_links.append(f"- {link}")
+
         if internal_links:
-            md_output.append("#### Internal Links:\n")
+            md_output.append("### Internal Links:\n")
             md_output.extend(internal_links)
-            md_output.append("\n\n")
-        
+            md_output.append("\n")
+
         if external_links:
-            md_output.append("#### External Links:\n")
+            md_output.append("### External Links:\n")
             md_output.extend(external_links)
-            md_output.append("\n\n")
+            md_output.append("\n")
 
-    # Metadata (mirroring 'metadata' key in JSON output)
-    md_output.append("### Page Metadata:\n")
-    md_output.append("----------------\n")
-    for key, value in metadata.items():
-        if value is not None:
-            md_output.append(f"- **{key.replace('_', ' ').title()}**: {value}\n")
-    md_output.append("\n")
-
-    # Detected Tech
-    all_detected_tech = []
-    for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
-        if tech_categories.get(category):
-            all_detected_tech.extend(tech_categories[category])
-    
-    if all_detected_tech:
-        md_output.append("### Technology Stack:\n")
-        md_output.append("----------------\n")
-        for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
-            if tech_categories.get(category):
-                md_output.append(f"{category.title()}:\n  " + ", ".join(sorted(tech_categories[category])) + "\n")
+    # Images
+    if images:
+        md_output.append("### Images:\n")
+        for img in images:
+            url = img.get('url')
+            alt = img.get('alt', '')
+            if url:
+                md_output.append(f"- {url} (alt: {alt})")
         md_output.append("\n")
 
-    # Raw HTML (optional, can be very long)
-    # md_output.append("### Raw HTML:\n")
-    # md_output.append("```html\n" + r.get('raw_html', '')[:1000] + "...\n```\n\n") # Truncate raw HTML
+    # Page metadata
+    if metadata:
+        md_output.append("### Page Metadata:\n")
+        for key, value in metadata.items():
+            if value is not None:
+                md_output.append(f"- **{key.replace('_', ' ').title()}**: {value}")
+        md_output.append("\n")
 
-    md_output.append("==================================================\n\n")
-    
-    return "".join(md_output)
+    # Technology stack
+    if tech_categories:
+        md_output.append("### Technology Stack:\n")
+        for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
+            techs = tech_categories.get(category)
+            if techs:
+                md_output.append(f"- **{category.title()}**: {', '.join(sorted(techs))}")
+        md_output.append("\n")
+
+    md_output.append("=" * 50 + "\n\n")
+    return "\n".join(md_output)
+
 
 def format_markdown_output(results: List[Dict]) -> str:
-    """Format scraping results as markdown, handling multiple pages by concatenating single page outputs."""
+    """Format scraping results as markdown for multiple pages with full content."""
     if not results:
         return "# No Results\n\nNo data was returned from the scraping operation.\n\n---\n"
     
     full_md_output = []
     for i, r in enumerate(results):
-        full_md_output.append(f"## Result for Page {i+1}\n")
+        full_md_output.append(f"# Result for Page {i+1}\n\n")
         full_md_output.append(format_markdown_output_single_page(r))
-        full_md_output.append("\n") # Add a newline between pages for readability
     
-    return "".join(full_md_output)
+    return "\n".join(full_md_output)
+
 
 def format_text_output(results: List[Dict]) -> str:
     """Format scraping results as plain text, handling multiple pages."""
@@ -718,7 +719,7 @@ def format_text_output(results: List[Dict]) -> str:
         if not url:
             continue
 
-        # Start with website URL and page number
+        # Page header
         full_text_output.extend([
             f"Page {i+1}: {url}",
             "=" * 50,
@@ -737,7 +738,7 @@ def format_text_output(results: List[Dict]) -> str:
             ])
             continue
 
-        # Add metadata
+        # Metadata
         metadata = r.get('metadata', {})
         title = metadata.get('title')
         description = metadata.get('meta_description')
@@ -751,27 +752,56 @@ def format_text_output(results: List[Dict]) -> str:
             full_text_output.append(f"Keywords: {keywords}")
         full_text_output.append("")
 
-        # Add technology stack
+        # Technology Stack
         tech_categories = r.get('tech_categories', {})
         if tech_categories:
             full_text_output.append("Technology Stack:")
             full_text_output.append("-" * 16)
             for category, techs in tech_categories.items():
                 if techs:
-                    full_text_output.append(f"{category.title()}:")
-                    full_text_output.append("  " + ", ".join(sorted(techs)))
+                    full_text_output.append(f"{category.title()}: {', '.join(sorted(techs))}")
             full_text_output.append("")
 
-        # Add main content
-        content = r.get('content')
+        # Main content (truncate long content for readability)
+        content = r.get('content', '')
         if content:
-            full_text_output.append("Content:")
+            max_len = 3000
+            display_content = content[:max_len] + ("..." if len(content) > max_len else "")
+            full_text_output.extend([
+                "Content:",
+                "-" * 8,
+                display_content,
+                ""
+            ])
+
+        # Links
+        links = r.get('links', [])
+        if links:
+            full_text_output.append("Links:")
             full_text_output.append("-" * 8)
-            full_text_output.append(content)
+            for link in links:
+                if isinstance(link, dict):
+                    text = link.get('text', link.get('url'))
+                    link_url = link.get('url')
+                else:
+                    text = link_url = str(link)
+                if link_url and text:
+                    full_text_output.append(f"- {text}: {link_url}")
             full_text_output.append("")
 
-        # Add navigation links
-        links = r.get('links', [])
+        # Images
+        images = r.get('images', [])
+        if images:
+            full_text_output.append("Images:")
+            full_text_output.append("-" * 8)
+            for img in images:
+                url = img.get('url')
+                alt = img.get('alt', '')
+                if url:
+                    full_text_output.append(f"- {url} (alt: {alt})")
+            full_text_output.append("")
+
+        # Navigation links (optional categorization)
         nav_links = []
         common_nav_patterns = {
             'about': ['about', 'about-us', 'company', 'who-we-are', 'our-story'],
@@ -782,43 +812,37 @@ def format_text_output(results: List[Dict]) -> str:
             'blog': ['blog', 'news', 'articles', 'insights', 'posts'],
             'careers': ['careers', 'jobs', 'work-with-us', 'join-us', 'opportunities']
         }
-        
+
         for link in links:
             if isinstance(link, dict):
                 link_url = link.get('url', '')
                 text = link.get('text', '').strip()
                 if link_url and text and not link_url.startswith(('#', 'javascript:', 'tel:', 'mailto:')):
-                    # Convert URL and text to lowercase for matching
                     url_lower = link_url.lower()
                     text_lower = text.lower()
-                    
-                    # Check if the link appears to be a navigation link
                     for category, patterns in common_nav_patterns.items():
-                        if any(pattern in url_lower.replace('-', '').replace('_', '').replace('/', '') for pattern in patterns) or \
-                           any(pattern in text_lower.replace('-', '').replace('_', '') for pattern in patterns):
+                        if any(p in url_lower.replace('-', '').replace('_', '').replace('/', '') for p in patterns) or \
+                           any(p in text_lower.replace('-', '').replace('_', '') for p in patterns):
                             nav_links.append(f"• {text}: {link_url}")
                             break
-        
+
         if nav_links:
-            full_text_output.append("Navigation:")
-            full_text_output.append("-" * 10)
+            full_text_output.append("Navigation Links:")
+            full_text_output.append("-" * 16)
             # Remove duplicates while preserving order
             seen = set()
-            unique_nav_links = []
-            for link in nav_links:
-                if link not in seen:
-                    seen.add(link)
-                    unique_nav_links.append(link)
+            unique_nav_links = [l for l in nav_links if not (l in seen or seen.add(l))]
             full_text_output.extend(unique_nav_links)
             full_text_output.append("")
 
-        # Add separator at the end
+        # Page separator
         full_text_output.extend([
             "=" * 50,
             ""
         ])
 
     return "\n".join(full_text_output)
+
 
 def format_ai_response_output(results: List[Dict]) -> str:
      # Placeholder for AI summarization or analysis
