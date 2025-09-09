@@ -46,7 +46,6 @@ app.add_middleware(
         "http://localhost:5678/workflow/A7gjrzVZsWUgiUnO/2cd82c/"
         "*"  # Temporary - allows all origins for debugging
     ],
-    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
