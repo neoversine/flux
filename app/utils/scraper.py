@@ -385,8 +385,10 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
     start_url = normalize_url(start_url)
     try:
         socket.gethostbyname(urllib.parse.urlparse(start_url).netloc)
+    except (ValueError, socket.gaierror, socket.error) as e:
+        return [create_error_result(start_url, f"Invalid URL or domain not found: {str(e)}")]
     except Exception as e:
-        return [create_error_result(start_url, f"Domain not found: {str(e)}")]
+        return [create_error_result(start_url, f"Unexpected error during domain resolution: {str(e)}")]
 
     urls_to_visit, visited_urls, results = [start_url], set(), []
 
@@ -413,10 +415,6 @@ async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict
 
     return results
 
-    except (ValueError, socket.gaierror, socket.error) as e:
-        return [create_error_result(start_url, f"Invalid URL or domain not found: {str(e)}")]
-    except Exception as e:
-        return [create_error_result(start_url, f"Unexpected error: {str(e)}")]
 # --------------------------
 # Formatting Output for Different Types
 # --------------------------
