@@ -20,11 +20,13 @@ async def register(data: RegisterIn):
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
 
+    # Generate unique secret token during registration
+    secret_token = secrets.token_hex(24)
     user_doc = {
         "username": data.username,
         "password": hash_password(data.password),
         "plan": 0,
-        "secret_token": None
+        "secret_token": secret_token
     }
     try:
         res = await db.users.insert_one(user_doc)
@@ -37,7 +39,7 @@ async def register(data: RegisterIn):
             "last_month_reset": date.today().isoformat(),
         }
         await db.usage.insert_one(usage_doc)
-        return {"msg": "user created"}
+        return {"msg": "user created", "secret_token": secret_token}
     except DuplicateKeyError:
         raise HTTPException(status_code=400, detail="User with this username or email already exists.")
 

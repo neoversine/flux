@@ -9,6 +9,7 @@ pydantic-settings
 playwright
 beautifulsoup4
 urllib3
+bcrypt==4.0.1
 regex
 typing-extensions
 fastapi[all]
