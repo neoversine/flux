@@ -2,7 +2,6 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from ..database import db
 from datetime import date, datetime, timedelta, timezone
 from bson import ObjectId
-from playwright.async_api import async_playwright
 from ..utils.scraper import format_json_output, format_text_output, format_markdown_output, scrape_multiple_pages
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -65,12 +64,6 @@ async def use_api(
             "last_month_reset": date.today().isoformat(),
         }
         await db.usage.insert_one(usage)
-    # else:
-    #     # Add missing fields for backward compatibility
-    #     if "last_day_reset" not in usage:
-    #         usage["last_day_reset"] = date.today().isoformat()
-    #     if "last_month_reset" not in usage:
-    #         usage["last_month_reset"] = date.today().isoformat()
     usage, changed = await _reset_usage_if_needed(usage)
     if changed:
         if usage.get("_id"):
@@ -105,7 +98,7 @@ async def use_api(
         "time": date.today().isoformat()
     })
 
-    results = await scrape_multiple_pages(url, max_pages=1)
+    results = await scrape_multiple_pages(url, max_pages=3)
 
     if not results or results[0].get('url') is None:
         raise HTTPException(status_code=500, detail="Scraping failed to retrieve URL information or URL key is missing in the result.")
