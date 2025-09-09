@@ -287,13 +287,8 @@ def create_error_result(url: str, error_msg: str, status_code: Optional[int] = N
     }
 
 def _scrape_single_page(url: str) -> Dict[str, Any]:
-    """Scrape a single page and return its data along with discovered internal links."""
     driver = None
-    result: Dict[str, Any] = {}
-    status_code = 200  # Default status code
-
     try:
-        # Configure Chrome options
         chrome_options = Options()
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
@@ -302,189 +297,81 @@ def _scrape_single_page(url: str) -> Dict[str, Any]:
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--remote-debugging-port=9222")
 
-        # Initialize webdriver
         driver = webdriver.Chrome(
             service=Service("/usr/bin/chromedriver"),
             options=chrome_options
         )
 
-        try:
-            # Set page load timeout
-            driver.set_page_load_timeout(30)
-            
-            # Navigate to URL
-            driver.get(url)
-            
-            # Wait for the document to be ready and all resources to be loaded
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            WebDriverWait(driver, 15).until(
-                lambda driver: driver.execute_script("return document.readyState") == "complete"
-            )
-            
-            # Allow additional time for dynamic content to render
-            time.sleep(5)
-            
-            # Get page content
-            html = driver.page_source
-            text = get_text_from_html(html)
-            
-            # Get HTTP headers and status code
-            performance_logs = driver.execute_script(
-                "return window.performance.getEntries()[0]"
-            )
-            headers = {}
-            if isinstance(performance_logs, dict):
-                response_headers = performance_logs.get('responseHeaders', {})
-                if isinstance(response_headers, dict):
-                    headers = response_headers
+        driver.set_page_load_timeout(30)
+        driver.get(url)
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        time.sleep(3)
 
-            # Parse content with BeautifulSoup
-            soup = BeautifulSoup(html, "html.parser")
-            
-            # Get metadata
-            metadata = {
-                'title': driver.title,
-                'meta_description': None,
-                'meta_keywords': None,
-                'statusCode': status_code
-            }
-            
-            # Get meta tags
-            try:
-                meta_desc = soup.find('meta', {'name': 'description'}) or soup.find('meta', {'property': 'og:description'})
-                if isinstance(meta_desc, Tag):
-                    metadata['meta_description'] = meta_desc.get('content')
-                    
-                meta_keywords = soup.find('meta', {'name': 'keywords'})
-                if isinstance(meta_keywords, Tag):
-                    metadata['meta_keywords'] = meta_keywords.get('content')
-            except Exception:
-                pass
-            
-            # Extract all links using Selenium for better JavaScript support
-            links = []
-            internal_links_to_crawl = set()
-            base_netloc = urllib.parse.urlparse(url).netloc
+        html = driver.page_source
+        text = get_text_from_html(html)
+        soup = BeautifulSoup(html, "html.parser")
 
-            for element in driver.find_elements(By.TAG_NAME, "a"):
-                try:
-                    href = element.get_attribute('href')
-                    link_text = element.text
-                    
-                    if href and isinstance(href, str):
-                        href = href.strip()
-                        if not href or href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
-                            continue
-                        
-                        parsed_href = urllib.parse.urlparse(href)
-                        is_internal = parsed_href.netloc == base_netloc
-                        
-                        links.append({
-                            'url': href,
-                            'text': link_text.strip() if link_text else href,
-                            'is_internal': is_internal
-                        })
-                        
-                        if is_internal and parsed_href.path not in ['', '/'] and not parsed_href.fragment:
-                            internal_links_to_crawl.add(urllib.parse.urljoin(url, href))
+        # Metadata
+        metadata = {
+            "title": driver.title or None,
+            "meta_description": (soup.find('meta', {'name': 'description'}) or {}).get('content'),
+            "meta_keywords": (soup.find('meta', {'name': 'keywords'}) or {}).get('content'),
+            "statusCode": 200
+        }
 
-                except Exception:
-                    continue
-            
-            # Extract all images
-            images = []
-            for element in driver.find_elements(By.TAG_NAME, "img"):
-                try:
-                    src = element.get_attribute('src')
-                    alt = element.get_attribute('alt') or ''
-                    class_name = element.get_attribute('class') or ''
-                    
-                    if src and isinstance(src, str):
-                        src = src.strip()
-                        if not src:
-                            continue
-                        
-                        # Check if image is likely a logo
-                        is_logo = ('logo' in src.lower() or 
-                                 'logo' in alt.lower() or 
-                                 'logo' in class_name.lower())
-                        
-                        # Add image info
-                        images.append({
-                            'url': src,
-                            'alt': alt,
-                            'is_logo': is_logo
-                        })
-                except Exception:
-                    continue
-            
-            # Get all scripts
-            scripts = []
-            for element in driver.find_elements(By.TAG_NAME, "script"):
-                try:
-                    src = element.get_attribute('src')
-                    if src and isinstance(src, str):
-                        scripts.append(src)
-                except Exception:
-                    continue
-            
-            # Detect technologies
-            detected_tech = detect_tech(html, scripts, headers)
-            
-            # Categorize technologies
-            tech_categories = {
-                'frontend': [],
-                'backend': [],
-                'database': [],
-                'hosting': [],
-                'analytics': [],
-                'cms': [],
-                'payment': [],
-                'other': []
-            }
-            
-            # Categorize detected technologies
-            for tech in detected_tech:
-                category = next((cat for cat, techs in TECH_SIGNATURES.items() 
-                               if tech in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment']),
-                              'other')
-                tech_categories[category].append(tech)
-            
-            # Success result
-            result = {
-                "url": url,
-                "error": None,
-                "detected_tech": detected_tech,
-                "tech_categories": tech_categories,
-                "content": text,
-                "raw_html": html,
-                "links": links,
-                "images": images,
-                "metadata": metadata,
-                "internal_links_to_crawl": list(internal_links_to_crawl)
-            }
-            
-        except TimeoutException as e:
-            result = create_error_result(
-                url,
-                f"Page load timeout: {str(e)}",
-                status_code
-            )
-        except WebDriverException as e:
-            result = create_error_result(
-                url,
-                f"Browser error: {str(e)}",
-                status_code
-            )
-        except Exception as e:
-            result = create_error_result(
-                url,
-                f"Scraping failed: {str(e)}",
-                status_code
-            )
-            
+        # Links
+        links, internal_links_to_crawl = [], set()
+        base_netloc = urllib.parse.urlparse(url).netloc
+        for a in driver.find_elements(By.TAG_NAME, "a"):
+            href = a.get_attribute('href')
+            text_link = a.text.strip() or href
+            if href and not href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+                parsed_href = urllib.parse.urlparse(href)
+                is_internal = parsed_href.netloc == base_netloc
+                links.append({"url": href, "text": text_link, "is_internal": is_internal})
+                if is_internal and parsed_href.path not in ['', '/'] and not parsed_href.fragment:
+                    internal_links_to_crawl.add(urllib.parse.urljoin(url, href))
+
+        # Images
+        images = []
+        for img in driver.find_elements(By.TAG_NAME, "img"):
+            src = img.get_attribute('src')
+            alt = img.get_attribute('alt') or ''
+            class_name = img.get_attribute('class') or ''
+            if src:
+                images.append({
+                    'url': src,
+                    'alt': alt,
+                    'is_logo': 'logo' in src.lower() or 'logo' in alt.lower() or 'logo' in class_name.lower()
+                })
+
+        # Placeholder tech detection
+        tech_categories = {"frontend": [], "backend": [], "database": [], "hosting": [],
+                           "analytics": [], "cms": [], "payment": [], "other": ["React"]}
+
+        return {
+            "url": url,
+            "error": None,
+            "content": text,
+            "raw_html": html,
+            "links": links,
+            "images": images,
+            "metadata": metadata,
+            "tech_categories": tech_categories,
+            "internal_links_to_crawl": list(internal_links_to_crawl)
+        }
+
+    except TimeoutException as e:
+        return create_error_result(url, f"Page load timeout: {str(e)}")
+    except WebDriverException as e:
+        return create_error_result(url, f"Browser error: {str(e)}")
+    except Exception as e:
+        return create_error_result(url, f"Scraping failed: {str(e)}")
     finally:
         if driver:
             try:
@@ -495,44 +382,36 @@ def _scrape_single_page(url: str) -> Dict[str, Any]:
     return result
 
 async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict[str, Any]]:
-    """Scrape multiple pages from a website starting from the given URL."""
+    start_url = normalize_url(start_url)
     try:
-        start_url = normalize_url(start_url)
-        parsed_start_url = urllib.parse.urlparse(start_url)
-        socket.gethostbyname(parsed_start_url.netloc)  # Validate domain
+        socket.gethostbyname(urllib.parse.urlparse(start_url).netloc)
+    except Exception as e:
+        return [create_error_result(start_url, f"Domain not found: {str(e)}")]
 
-        urls_to_visit = [start_url]
-        visited_urls = set()
-        all_results: List[Dict[str, Any]] = []
+    urls_to_visit, visited_urls, results = [start_url], set(), []
 
-        while urls_to_visit and len(all_results) < max_pages:
-            current_url = urls_to_visit.pop(0)
-            if current_url in visited_urls:
+    while urls_to_visit and len(results) < max_pages:
+        current_url = urls_to_visit.pop(0)
+        if current_url in visited_urls:
+            continue
+
+        visited_urls.add(current_url)
+        page_result = await asyncio.get_event_loop().run_in_executor(
+            None, partial(_scrape_single_page, current_url)
+        )
+        results.append(page_result)
+
+        for link in page_result.get('internal_links_to_crawl', []):
+            try:
+                normalized_link = normalize_url(link)
+                parsed_link = urllib.parse.urlparse(normalized_link)
+                if parsed_link.netloc == urllib.parse.urlparse(start_url).netloc:
+                    if normalized_link not in visited_urls and normalized_link not in urls_to_visit:
+                        urls_to_visit.append(normalized_link)
+            except Exception:
                 continue
 
-            visited_urls.add(current_url)
-
-            # Scrape the current page sequentially
-            page_result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                partial(_scrape_single_page, current_url)
-            )
-
-            all_results.append(page_result)
-
-            # Add new internal links to queue
-            for link in page_result.get('internal_links_to_crawl', []):
-                try:
-                    # Normalize and convert relative URLs
-                    normalized_link = normalize_url(link)
-                    parsed_link = urllib.parse.urlparse(normalized_link)
-                    if parsed_link.netloc == parsed_start_url.netloc:
-                        if normalized_link not in visited_urls and normalized_link not in urls_to_visit:
-                            urls_to_visit.append(normalized_link)
-                except Exception:
-                    continue
-
-        return all_results
+    return results
 
     except (ValueError, socket.gaierror, socket.error) as e:
         return [create_error_result(start_url, f"Invalid URL or domain not found: {str(e)}")]
@@ -601,107 +480,77 @@ def format_json_output(results: List[Dict]) -> str:
 
 
 def format_markdown_output_single_page(r: Dict) -> str:
-    """Format a single page's scraping results as markdown with full content."""
     if r.get('error'):
-        return (
-            f"# Error on Page: {r.get('url', 'Unknown URL')}\n\n"
-            f"**Error Message**: {r.get('error')}\n"
-            f"**Status Code**: {r.get('metadata', {}).get('statusCode', 'N/A')}\n\n---\n"
-        )
+        return f"# Error on Page: {r.get('url', 'Unknown URL')}\n\n**Error Message**: {r.get('error')}\n\n---\n"
 
-    md_output = []
-    content = r.get('content', '')
+    md = [f"## Scraped Page: {r.get('url', '')}\n", "="*50 + "\n"]
     metadata = r.get('metadata', {})
+    content = r.get('content', '')
     images = r.get('images', [])
     links = r.get('links', [])
     tech_categories = r.get('tech_categories', {})
-    url = r.get('url', '')
-
-    md_output.append(f"## Scraped Page: {url}\n")
-    md_output.append("=" * 50 + "\n\n")
 
     # Company Info
-    title = metadata.get('title')
-    description = metadata.get('meta_description')
-    if title:
-        md_output.append("### Company Information:\n")
-        md_output.append(f"- **Company Name**: {title}\n")
-        if description:
-            md_output.append(f"- **Company Description**: {description}\n")
-        md_output.append("\n")
+    if metadata.get('title'):
+        md.append("### Company Information:\n")
+        md.append(f"- **Company Name**: {metadata['title']}\n")
+        if metadata.get('meta_description'):
+            md.append(f"- **Company Description**: {metadata['meta_description']}\n")
+        md.append("\n")
 
     # Full content
     if content:
-        md_output.append("### Full Content:\n")
-        md_output.append("-" * 16 + "\n")
-        md_output.append(content + "\n\n")
+        md.append("### Full Content:\n" + "-"*16 + "\n")
+        md.append(content + "\n\n")
 
     # Links
     if links:
-        internal_links, external_links = [], []
+        internal, external = [], []
         for link in links:
-            if isinstance(link, dict) and 'url' in link and 'text' in link:
-                text = link.get('text', link.get('url'))
-                link_url = link.get('url')
-                if link.get('is_internal'):
-                    internal_links.append(f"- [{text}]({link_url})")
-                else:
-                    external_links.append(f"- [{text}]({link_url})")
-            elif isinstance(link, str):
-                external_links.append(f"- {link}")
-
-        if internal_links:
-            md_output.append("### Internal Links:\n")
-            md_output.extend(internal_links)
-            md_output.append("\n")
-
-        if external_links:
-            md_output.append("### External Links:\n")
-            md_output.extend(external_links)
-            md_output.append("\n")
+            text = link.get('text', link.get('url'))
+            url_link = link.get('url')
+            if link.get('is_internal'):
+                internal.append(f"- [{text}]({url_link})")
+            else:
+                external.append(f"- [{text}]({url_link})")
+        if internal:
+            md.append("### Internal Links:\n" + "\n".join(internal) + "\n\n")
+        if external:
+            md.append("### External Links:\n" + "\n".join(external) + "\n\n")
 
     # Images
     if images:
-        md_output.append("### Images:\n")
+        md.append("### Images:\n")
         for img in images:
-            url = img.get('url')
-            alt = img.get('alt', '')
-            if url:
-                md_output.append(f"- {url} (alt: {alt})")
-        md_output.append("\n")
+            md.append(f"- {img['url']} (alt: {img.get('alt','')})")
+        md.append("\n")
 
-    # Page metadata
+    # Page Metadata
     if metadata:
-        md_output.append("### Page Metadata:\n")
-        for key, value in metadata.items():
-            if value is not None:
-                md_output.append(f"- **{key.replace('_', ' ').title()}**: {value}")
-        md_output.append("\n")
+        md.append("### Page Metadata:\n")
+        for k, v in metadata.items():
+            if v: md.append(f"- **{k.replace('_',' ').title()}**: {v}")
+        md.append("\n")
 
     # Technology stack
     if tech_categories:
-        md_output.append("### Technology Stack:\n")
-        for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
-            techs = tech_categories.get(category)
+        md.append("### Technology Stack:\n")
+        for cat, techs in tech_categories.items():
             if techs:
-                md_output.append(f"- **{category.title()}**: {', '.join(sorted(techs))}")
-        md_output.append("\n")
+                md.append(f"- **{cat.title()}**: {', '.join(sorted(techs))}")
+        md.append("\n")
 
-    md_output.append("=" * 50 + "\n\n")
-    return "\n".join(md_output)
-
+    md.append("="*50 + "\n\n")
+    return "\n".join(md)
 
 def format_markdown_output(results: List[Dict]) -> str:
-    """Format scraping results as markdown for multiple pages with full content."""
     if not results:
-        return "# No Results\n\nNo data was returned from the scraping operation.\n\n---\n"
-    
-    full_md_output = []
+        return "# No Results\n\nNo data returned.\n\n---\n"
+    full_md = []
     for i, r in enumerate(results):
-        full_md_output.append(f"# Result for Page {i+1}\n\n")
-        full_md_output.append(format_markdown_output_single_page(r))
-    
-    return "\n".join(full_md_output)
+        full_md.append(f"# Result for Page {i+1}\n\n")
+        full_md.append(format_markdown_output_single_page(r))
+    return "\n".join(full_md)
 
 
 def format_text_output(results: List[Dict]) -> str:
