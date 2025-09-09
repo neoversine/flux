@@ -1,4 +1,3 @@
-fastapi
 uvicorn
 python-dotenv
 motor
@@ -6,15 +5,13 @@ passlib[bcrypt]
 python-jose
 pydantic
 pydantic-settings
-playwright
 beautifulsoup4
-urllib3
-bcrypt==4.0.1
-regex
 typing-extensions
 fastapi[all]
-python-multipart
 requests
-reportlab
-pdf2image
 geopy
+selenium
+webdriver-manager
+pdf2image
+Pillow
+reportlab
