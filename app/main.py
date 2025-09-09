@@ -35,7 +35,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:5173",
+        "http://localhost:5678",
         "https://localhost:5173",
         "https://fasttools.neoversine.in",
         "http://fasttools.neoversine.in",
