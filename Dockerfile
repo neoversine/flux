@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Install system dependencies for Chrome + Poppler + Pillow
+# Install system dependencies (Chrome + Poppler + Pillow)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -32,29 +32,20 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-
-# Install Google Chrome + ChromeDriver
+# Install Google Chrome + Chromium driver
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+       > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y \
        google-chrome-stable \
        chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
-
-# Install matching ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/') \
-    && CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}") \
-    && wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" \
-    && unzip chromedriver_linux64.zip -d /usr/bin \
-    && rm chromedriver_linux64.zip
-
-
 # Environment
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
-# Install Python deps
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
