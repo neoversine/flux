@@ -42,8 +42,6 @@ app.add_middleware(
         "https://neo-geo-scrapper.vercel.app/",
         "https://neocrawl.neoversine.in/",
         "https://neogen.neoversine.in/",
-        "http://localhost:5768",
-        "http://localhost:5678/workflow/A7gjrzVZsWUgiUnO/2cd82c/"
         "*"  # Temporary - allows all origins for debugging
     ],
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
