@@ -1,16 +1,24 @@
 import subprocess
-from playwright.sync_api import sync_playwright
 import multiprocessing
 from functools import partial
 import asyncio
 import sys
+import socket
 import urllib.parse
 import uuid
-from typing import Dict, List, Set, cast
+from typing import Dict, List, Set, cast, Optional, Any
 from bs4 import BeautifulSoup, Tag
 import re
 import json
-from random import randint
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
 
 # --------------------------
 # Utility functions
@@ -69,35 +77,30 @@ def normalize_url(input_url: str) -> str:
 def get_text_from_html(html: str) -> str:
     try:
         soup = BeautifulSoup(html, "html.parser")
-        # Remove potentially noisy tags
-        for element in soup(['script', 'style', 'noscript', 'footer', 'header', 'form', 'button']):
-            tag = cast(Tag, element)
-            tag.decompose()
-
-        # Convert relevant tags to markdown-friendly format - This part might be redundant or need adjustment based on desired markdown output
-        # Let's rely on BeautifulSoup's get_text with a separator first.
-        for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'ul', 'ol', 'blockquote']):
-           tag = cast(Tag, element)
-           if tag.name.startswith('h'):
-                tag.insert_before(f"\n{'#' * int(tag.name[1])} ")
-                tag.insert_after("\n")
-           elif tag.name == 'p':
-                tag.insert_before("\n")
-                tag.insert_after("\n")
-           elif tag.name in ['li']:
-                tag.insert_before("* ")
-                tag.insert_after("\n")
-           elif tag.name in ['ul', 'ol', 'blockquote']:
-                tag.insert_before("\n")
-                tag.insert_after("\n")
-
-
-        # Get text and clean up extra whitespace, using \n as separator
-        content = soup.get_text(separator='\n', strip=True)
-        content = re.sub(r'\n{3,}', '\n\n', content) # Reduce multiple newlines to at most two
-        # content = re.sub(r'\s{2,}', ' ', content) # This might remove intended spaces within lines
-
-        return content.strip()
+        
+        # Remove unwanted elements that typically don't contain useful text content
+        for element in soup.find_all(['script', 'style', 'noscript', 'iframe', 'meta', 'link', 
+                                    'svg', 'canvas', 'input', 'button', 'form', 'header', 'footer', 'nav']):
+            element.decompose()
+        
+        # Extract all visible text
+        text_content = []
+        for element in soup.find_all(text=True):
+            # Ensure element.parent is not None before accessing its name
+            if element.parent and element.parent.name not in ['style', 'script', 'head', 'title', 'meta', '[document]']:
+                stripped_text = str(element).strip() # Cast to string to ensure .strip() is available
+                if stripped_text:
+                    text_content.append(stripped_text)
+        
+        # Join all parts
+        text = ' '.join(text_content)
+        
+        # Clean up whitespace
+        text = re.sub(r'\s+', ' ', text)      # Normalize all whitespace to single spaces
+        text = text.strip()
+        
+        return text
+    
     except Exception as e:
         return f"Error extracting text from HTML: {str(e)}"
 
@@ -187,7 +190,6 @@ TECH_SIGNATURES = {
 
     # Analytics
     "Google Analytics": [r"gtag\.js", r"ga\.js"],
-    "Google Tag Manager": [r"googletagmanager\.com"],
     "Hotjar": [r"hotjar"],
     "Mixpanel": [r"mixpanel"],
     "Facebook Pixel": [r"fbq\("],
@@ -202,7 +204,6 @@ TECH_SIGNATURES = {
     "Razorpay": [r"checkout\.razorpay\.com"],
     "PayPal": [r"paypalobjects\.com"],
     "Auth0": [r"auth0\.com"],
-    "Firebase Auth": [r"identitytoolkit\.googleapis\.com"],
     "Okta": [r"okta\.com"],
     "Paddle": [r"paddle\.js"], # Added Paddle
     "Square": [r"squarecdn\.com"], # Added Square
@@ -267,405 +268,351 @@ def detect_tech(html: str, scripts: List[str], headers: Dict[str, str]) -> List[
 
 
 
-def _scrape_single_process(start_url: str, max_pages: int) -> List[Dict]:
-    start_url = normalize_url(start_url)
-    visited: Set[str] = set()
-    results = []
-    
-    parsed_start = urllib.parse.urlparse(start_url)
-    base_domain = f"{parsed_start.scheme}://{parsed_start.netloc}"
+def create_error_result(url: str, error_msg: str, status_code: Optional[int] = None) -> Dict[str, Any]:
+    """Create a standardized error result"""
+    return {
+        "url": url,
+        "error": error_msg,
+        "detected_tech": [],
+        "tech_categories": {},
+        "content": "",
+        "raw_html": "",
+        "links": [],
+        "images": [],
+        "metadata": {
+            "title": None,
+            "meta_description": None,
+            "meta_keywords": None,
+            "statusCode": status_code
+        }
+    }
 
-    def is_valid_link(href: str) -> bool:
-        if not href:
-            return False
-        try:
-            parsed = urllib.parse.urlparse(href)
-            # Accept links that are either relative or from the same domain
-            return (not parsed.netloc) or parsed.netloc == parsed_start.netloc
-        except Exception:
-            return False
+def _scrape_single_page(url: str) -> Dict[str, Any]:
+    """Scrape a single page and return its data along with discovered internal links."""
+    driver = None
+    result: Dict[str, Any] = {}
+    status_code = 200  # Default status code
 
-    with sync_playwright() as p:
+    try:
+        # Configure Chrome options
+        chrome_options = Options()
+        chrome_options.add_argument('--headless=new')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--ignore-certificate-errors')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-infobars')
+        chrome_options.add_argument('--disable-popup-blocking')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36')
+
+        # Initialize webdriver with ChromeDriverManager
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=chrome_options
+        )
+
         try:
-            browser = p.firefox.launch(headless=True)
-            context = browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:91.0) Gecko/20100101 Firefox/91.0',
-                java_script_enabled=True,
-                accept_downloads=True,
-                has_touch=False,
-                is_mobile=False,
-                locale='en-US'
+            # Set page load timeout
+            driver.set_page_load_timeout(30)
+            
+            # Navigate to URL
+            driver.get(url)
+            
+            # Wait for the document to be ready and all resources to be loaded
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
-            page = context.new_page()
-        except Exception as e:
-            results.append({
-                "url": start_url,
-                "error": f"Failed to launch browser: {str(e)}. Ensure Playwright dependencies are installed on the VPS.",
-                "detected_tech": [],
-                "tech_categories": {},
-                "content": "",
-                "raw_html": "",
-                "links": [],
-                "images": [],
-                "metadata": {
-                    "title": None,
-                    "meta_description": None,
-                    "meta_keywords": None
-                }
-            })
-            return results # Exit early if browser launch fails
-        
-        # Add error handling for common cloud hosting scenarios
-        page.on("response", lambda response: handle_response_status(response))
-        
-        # Set default timeout
-        page.set_default_timeout(30000)  # 30 seconds
-        queue = [start_url]
+            WebDriverWait(driver, 15).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            
+            # Allow additional time for dynamic content to render
+            time.sleep(5)
+            
+            # Get page content
+            html = driver.page_source
+            text = get_text_from_html(html)
+            
+            # Get HTTP headers and status code
+            performance_logs = driver.execute_script(
+                "return window.performance.getEntries()[0]"
+            )
+            headers = {}
+            if isinstance(performance_logs, dict):
+                response_headers = performance_logs.get('responseHeaders', {})
+                if isinstance(response_headers, dict):
+                    headers = response_headers
 
-        while queue and len(visited) < max_pages:
-            current_url = queue.pop(0)
-            if current_url in visited:
-                continue
-
-            response = None
+            # Parse content with BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Get metadata
+            metadata = {
+                'title': driver.title,
+                'meta_description': None,
+                'meta_keywords': None,
+                'statusCode': status_code
+            }
+            
+            # Get meta tags
             try:
-                # Try to navigate to the page with proper error handling
-                response = page.goto(
-                    current_url,
-                    timeout=30000,
-                    wait_until="domcontentloaded"
-                )
-                status_code = response.status if response else None
-
-                if not response or (status_code is not None and status_code >= 400):
-                    error_msg = f"Website returned {status_code} for {current_url}"
-                    results.append({
-                        "url": current_url,
-                        "error": error_msg,
-                        "detected_tech": [],
-                        "tech_categories": {},
-                        "content": "",
-                        "raw_html": "",
-                        "links": [],
-                        "images": [],
-                        "metadata": {
-                            "title": None,
-                            "meta_description": None,
-                            "meta_keywords": None,
-                            "statusCode": status_code
-                        }
-                    })
-                    continue
-                
-                # Wait for the content to be loaded
-                page.wait_for_load_state('domcontentloaded')
-                page.wait_for_timeout(2000)  # Give JavaScript 2 seconds to execute
-                
-                # Add random mouse movements and delays to simulate human behavior
-                page.mouse.move(
-                    x=float(randint(100, 800)),
-                    y=float(randint(100, 600))
-                )
-                page.wait_for_timeout(randint(500, 1500))
-                
-                html = page.content()
-                visited.add(current_url)
-
-                soup = BeautifulSoup(html, "html.parser")
-
-                # Extract all links and images
-                links = []
-                images = []
-                for tag in soup.find_all(['a', 'img']):
-                    if isinstance(tag, Tag):
-                        if tag.name == 'a':
-                            href = tag.get('href')
-                            text = tag.get_text(strip=True)
-                            if href:
-                                links.append({
-                                    'url': href,
-                                    'text': text if text else href
-                                })
-                        elif tag.name == 'img':
-                            src = tag.get('src')
-                            alt = tag.get('alt', '')
-                            if src:
-                                images.append({
-                                    'url': src,
-                                    'alt': alt
-                                })
-
-                # Collect scripts for tech detection
-                scripts = []
-                for tag in soup.find_all(["script", "link", "meta"]):
-                    if isinstance(tag, Tag):
-                        if tag.name == "script":
-                            src = tag.get("src")
-                            if src:
-                                scripts.append(src)
-                            # Also collect inline scripts for better detection
-                            if tag.string:
-                                scripts.append(tag.string)
-                        elif tag.name == "link":
-                            href = tag.get("href")
-                            if href:
-                                scripts.append(href)
-                        elif tag.name == "meta":
-                            content = tag.get("content", "")
-                            name = tag.get("name", "")
-                            if content and name:
-                                scripts.append(f"{name}:{content}")
-
-                headers = {}
-                if response is not None:
-                    headers = {k.lower(): v for k, v in response.headers.items()}
-
-                tech_stack = detect_tech(html, scripts, headers)
-                text = get_text_from_html(html)
-
-                # Categorize the tech stack
-                tech_categories = {
-                    'frontend': [],
-                    'backend': [],
-                    'database': [],
-                    'hosting': [],
-                    'analytics': [],
-                    'cms': [],
-                    'payment': [],
-                    'other': []
-                }
-
-                CATEGORY_MAP = {
-                    "frontend": ["React", "Next.js", "Vue.js", "Angular", "Svelte", "jQuery", "Bootstrap", "Tailwind CSS", "Bulma", "Foundation", "Vuex", "Redux", "Gatsby", "Nuxt.js", "Vuetify", "Preact", "Lit", "Dojo"],
-                    "backend": ["Express.js", "NestJS", "Django", "Flask", "Rails", "Laravel", "ASP.NET", "Spring Boot", "Node.js", "Go", "Ruby", "PHP", "Python", "Java", "C#", "Kotlin", "Rust", "Scala"],
-                    "database": ["MongoDB", "PostgreSQL", "MySQL", "Firebase", "Supabase", "Redis", "Elasticsearch", "SQLite", "Microsoft SQL Server", "Cassandra", "Couchbase"],
-                    "hosting": ["Vercel", "Netlify", "Cloudflare", "Akamai", "AWS CloudFront", "Firebase Hosting", "Heroku", "Google Cloud Platform", "Azure", "AWS S3", "DigitalOcean Spaces"],
-                    "analytics": ["Google Analytics", "Google Tag Manager", "Hotjar", "Mixpanel", "Facebook Pixel", "Amplitude", "Matomo", "Segment", "Plausible Analytics"],
-                    "payment": ["Stripe", "Razorpay", "PayPal", "Auth0", "Firebase Auth", "Okta", "Paddle", "Square", "Adyen"],
-                    "cms": ["WordPress", "Drupal", "Shopify", "Magento", "Wix", "Joomla", "SquareSpace", "WooCommerce", "Headless CMS", "Contentful", "Strapi", "Ghost"],
-                    "other": ["GraphQL", "Webpack", "Babel", "Docker", "Kubernetes", "REST API", "gRPC", "WebAssembly", "Storybook", "Cypress", "Selenium", "WebSockets", "Service Workers"]
-                }
-
-                for tech in tech_stack:
-                    found_category = False
-                    for category, techs_in_category in CATEGORY_MAP.items():
-                        if tech in techs_in_category:
-                            tech_categories[category].append(tech)
-                            found_category = True
-                            break
-                    if not found_category:
-                        tech_categories['other'].append(tech)
-
-                # Extract metadata safely
-                metadata = {
-                    'title': soup.title.string if soup.title else None,
-                    'meta_description': None,
-                    'meta_keywords': None,
-                    'statusCode': status_code
-                }
-                
-                meta_desc = soup.find('meta', {'name': 'description'})
+                meta_desc = soup.find('meta', {'name': 'description'}) or soup.find('meta', {'property': 'og:description'})
                 if isinstance(meta_desc, Tag):
                     metadata['meta_description'] = meta_desc.get('content')
                     
                 meta_keywords = soup.find('meta', {'name': 'keywords'})
                 if isinstance(meta_keywords, Tag):
                     metadata['meta_keywords'] = meta_keywords.get('content')
+            except Exception:
+                pass
+            
+            # Extract all links using Selenium for better JavaScript support
+            links = []
+            internal_links_to_crawl = set()
+            base_netloc = urllib.parse.urlparse(url).netloc
 
-                results.append({
-                    "url": current_url,
-                    "detected_tech": tech_stack if tech_stack else ["Unknown"],
-                    "tech_categories": tech_categories,
-                    "content": text,
-                    "raw_html": html,
-                    "links": links,
-                    "images": images,
-                    "metadata": metadata
-                })
+            for element in driver.find_elements(By.TAG_NAME, "a"):
+                try:
+                    href = element.get_attribute('href')
+                    link_text = element.text
+                    
+                    if href and isinstance(href, str):
+                        href = href.strip()
+                        if not href or href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+                            continue
+                        
+                        parsed_href = urllib.parse.urlparse(href)
+                        is_internal = parsed_href.netloc == base_netloc
+                        
+                        links.append({
+                            'url': href,
+                            'text': link_text.strip() if link_text else href,
+                            'is_internal': is_internal
+                        })
+                        
+                        if is_internal and parsed_href.path not in ['', '/'] and not parsed_href.fragment:
+                            internal_links_to_crawl.add(urllib.parse.urljoin(url, href))
 
-                for link in soup.find_all("a", href=True):
-                    if isinstance(link, Tag):
-                     href = link.get("href")
-
-                     if isinstance(href, str):  # ✅ ensure it's a string
-                        full_url = urllib.parse.urljoin(base_domain, href)
-
-                        if (
-                            is_valid_link(full_url)  # ✅ validate the resolved URL
-                            and full_url not in visited
-                            and len(queue) + len(visited) < max_pages
-                        ):
-                            queue.append(full_url)
-
-            except Exception as e:
-                error_message = str(e)
-                if "net::ERR_NAME_NOT_RESOLVED" in error_message:
-                    error_message = f"Could not resolve domain name for: {current_url}"
-                elif "net::ERR_CONNECTION_REFUSED" in error_message:
-                    error_message = f"Connection refused by: {current_url}"
-                elif "net::ERR_CONNECTION_TIMED_OUT" in error_message:
-                    error_message = f"Connection timed out while trying to reach: {current_url}"
-                elif "AWS" in error_message:
-                    error_message = f"Website hosted on AWS is not accessible or requires authentication: {current_url}"
-                elif any(host in error_message for host in ["cloudfront", "s3.amazonaws", "amazonaws.com"]):
-                    error_message = f"Website is hosted on AWS but is not properly configured or accessible: {current_url}"
-                
-                results.append({
-                    "url": current_url,
-                    "error": error_message,
-                    "detected_tech": [],
-                    "tech_categories": {},
-                    "content": "",
-                    "raw_html": "",
-                    "links": [],
-                    "images": [],
-                    "metadata": {
-                        "title": None,
-                        "meta_description": None,
-                        "meta_keywords": None
-                    }
-                })
-
-        browser.close()
-
-    return results
-
-async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict]:
-    try:
-        # Validate and normalize URL
-        start_url = normalize_url(start_url)
-        parsed_url = urllib.parse.urlparse(start_url)
-        
-        # First do a quick check if the domain resolves
-        import socket
-        try:
-            socket.gethostbyname(parsed_url.netloc)
-        except (socket.gaierror, socket.error):
-            return [{
-                "url": start_url,
-                "error": f"Domain not found: {parsed_url.netloc}",
-                "detected_tech": [],
-                "tech_categories": {},
-                "content": None,
-                "raw_html": None,
-                "links": [],
-                "images": [],
-                "metadata": {
-                    "title": None,
-                    "meta_description": None,
-                    "meta_keywords": None
-                }
-            }]
-        
-        # Create a process pool with just one process to run Playwright
-        with multiprocessing.Pool(1) as pool:
-            # Run the scraping in a separate process
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,  # Uses default executor
-                partial(pool.apply, _scrape_single_process, args=(start_url, max_pages))
+                except Exception:
+                    continue
+            
+            # Extract all images
+            images = []
+            for element in driver.find_elements(By.TAG_NAME, "img"):
+                try:
+                    src = element.get_attribute('src')
+                    alt = element.get_attribute('alt') or ''
+                    class_name = element.get_attribute('class') or ''
+                    
+                    if src and isinstance(src, str):
+                        src = src.strip()
+                        if not src:
+                            continue
+                        
+                        # Check if image is likely a logo
+                        is_logo = ('logo' in src.lower() or 
+                                 'logo' in alt.lower() or 
+                                 'logo' in class_name.lower())
+                        
+                        # Add image info
+                        images.append({
+                            'url': src,
+                            'alt': alt,
+                            'is_logo': is_logo
+                        })
+                except Exception:
+                    continue
+            
+            # Get all scripts
+            scripts = []
+            for element in driver.find_elements(By.TAG_NAME, "script"):
+                try:
+                    src = element.get_attribute('src')
+                    if src and isinstance(src, str):
+                        scripts.append(src)
+                except Exception:
+                    continue
+            
+            # Detect technologies
+            detected_tech = detect_tech(html, scripts, headers)
+            
+            # Categorize technologies
+            tech_categories = {
+                'frontend': [],
+                'backend': [],
+                'database': [],
+                'hosting': [],
+                'analytics': [],
+                'cms': [],
+                'payment': [],
+                'other': []
+            }
+            
+            # Categorize detected technologies
+            for tech in detected_tech:
+                category = next((cat for cat, techs in TECH_SIGNATURES.items() 
+                               if tech in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment']),
+                              'other')
+                tech_categories[category].append(tech)
+            
+            # Success result
+            result = {
+                "url": url,
+                "error": None,
+                "detected_tech": detected_tech,
+                "tech_categories": tech_categories,
+                "content": text,
+                "raw_html": html,
+                "links": links,
+                "images": images,
+                "metadata": metadata,
+                "internal_links_to_crawl": list(internal_links_to_crawl)
+            }
+            
+        except TimeoutException as e:
+            result = create_error_result(
+                url,
+                f"Page load timeout: {str(e)}",
+                status_code
+            )
+        except WebDriverException as e:
+            result = create_error_result(
+                url,
+                f"Browser error: {str(e)}",
+                status_code
+            )
+        except Exception as e:
+            result = create_error_result(
+                url,
+                f"Scraping failed: {str(e)}",
+                status_code
             )
             
-        return result
-    except ValueError as e:
-        # Handle URL validation errors
-        return [{
-            "url": start_url,
-            "error": str(e),
-            "detected_tech": [],
-            "tech_categories": {},
-            "content": None,
-            "raw_html": None,
-            "links": [],
-            "images": [],
-            "metadata": {
-                "title": None,
-                "meta_description": None,
-                "meta_keywords": None
-            }
-        }]
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    
+    return result
+
+async def scrape_multiple_pages(start_url: str, max_pages: int = 3) -> List[Dict[str, Any]]:
+    """Scrape multiple pages from a website starting from the given URL."""
+    try:
+        start_url = normalize_url(start_url)
+        parsed_start_url = urllib.parse.urlparse(start_url)
+        socket.gethostbyname(parsed_start_url.netloc)
+        
+        urls_to_visit = [start_url]
+        visited_urls = set()
+        all_results: List[Dict[str, Any]] = []
+        
+        with multiprocessing.Pool(1) as pool: # Use a pool for single process to manage browser lifecycle
+            while urls_to_visit and len(all_results) < max_pages:
+                current_url = urls_to_visit.pop(0)
+                if current_url in visited_urls:
+                    continue
+                
+                visited_urls.add(current_url)
+                
+                # Scrape the current page
+                page_result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    partial(pool.apply, _scrape_single_page, args=(current_url,))
+                )
+                
+                if page_result and not page_result.get('error'):
+                    all_results.append(page_result)
+                    
+                    # Add new internal links to the queue
+                    for link in page_result.get('internal_links_to_crawl', []):
+                        normalized_link = normalize_url(link)
+                        if normalized_link not in visited_urls and normalized_link not in urls_to_visit:
+                            urls_to_visit.append(normalized_link)
+                else:
+                    # If there's an error, still add it to results if it's the first page
+                    if current_url == start_url:
+                        all_results.append(page_result)
+        
+        return all_results
+            
+    except (ValueError, socket.gaierror, socket.error) as e:
+        return [create_error_result(start_url, f"Invalid URL or domain not found: {str(e)}")]
     except Exception as e:
-        # Handle any other unexpected errors
-        return [{
-            "url": start_url,
-            "error": f"Unexpected error: {str(e)}",
-            "detected_tech": [],
-            "tech_categories": {},
-            "content": None,
-            "raw_html": None,
-            "links": [],
-            "images": [],
-            "metadata": {
-                "title": None,
-                "meta_description": None,
-                "meta_keywords": None
-            }
-        }]
+        return [create_error_result(start_url, f"Unexpected error: {str(e)}")]
 # --------------------------
 # Formatting Output for Different Types
 # --------------------------
 
 def format_json_output(results: List[Dict]) -> str:
-    if not results or len(results) == 0:
-        return json.dumps({}, indent=2, ensure_ascii=False)
+    """Format scraping results as JSON, handling multiple pages."""
+    if not results:
+        return json.dumps([], indent=2, ensure_ascii=False) # Return an empty list for no results
 
-    r = results[0]  # Take first result
-    
-    content = r.get('content')
-    metadata = r.get('metadata', {})
-    
-    company_info = {
-        "company_name": metadata.get('title'),
-        "company_description": metadata.get('meta_description')
-    }
-    
-    links = []
-    for link_data in r.get('links', []):
-        url = link_data.get('url')
-        if url and not url.startswith('#') and not url.startswith('javascript:'):
-            links.append(url)
-    
-    response_metadata = {
-        "description": metadata.get('meta_description'),
-        "favicon": r.get('favicon'),
-        "title": metadata.get('title'),
-        "language": "en", # Defaulting to 'en' as it's a common practice and usually detected
-        "scrapeId": str(uuid.uuid4()),
-        "sourceURL": urllib.parse.urlparse(r.get('url', '')).netloc if r.get('url') else None,
-        "url": r.get('url'),
-        "statusCode": r.get('metadata', {}).get('statusCode'),
-        "contentType": "text/html; charset=utf-8", # This is a reasonable default for web scraping
-        "proxyUsed": "basic", # This is an internal detail, can be defaulted
-        "cacheState": "miss", # This is an internal detail, can be defaulted
-        "creditsUsed": 5 # This is an internal detail, can be defaulted
-    }
-    
-    # Remove None values from metadata
-    response_metadata = {k: v for k, v in response_metadata.items() if v is not None}
+    formatted_pages = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
 
-    response = {
-        "json": company_info,
-        "markdown": format_markdown_output([r]),
-        "html": r.get('raw_html'),
-        "links": links,
-        "summary": content[:500] + ('...' if content and len(content) > 500 else '') if content else None,
-        "metadata": response_metadata
-    }
-    
-    # Remove None values from the main response
-    response = {k: v for k, v in response.items() if v is not None}
-    
-    return json.dumps(response, indent=2, ensure_ascii=False)
-
-
-def format_markdown_output(results: List[Dict]) -> str:
-    """Format scraping results as markdown with custom styling."""
-    if not results or len(results) == 0:
-        return ""
+        content = r.get('content')
+        metadata = r.get('metadata', {})
         
-    r = results[0]  # Take first result
-    if 'error' in r:
-        return f"# Error\n\n**Error Message**: {r['error']}\n\n---\n"
+        company_info = {
+            "company_name": metadata.get('title'),
+            "company_description": metadata.get('meta_description')
+        }
+        
+        links = []
+        for link_data in r.get('links', []):
+            url = link_data.get('url')
+            if url and not url.startswith('#') and not url.startswith('javascript:'):
+                links.append(url)
+        
+        response_metadata = {
+            "description": metadata.get('meta_description'),
+            "favicon": r.get('favicon'),
+            "title": metadata.get('title'),
+            "language": "en", # Defaulting to 'en' as it's a common practice and usually detected
+            "scrapeId": str(uuid.uuid4()),
+            "sourceURL": urllib.parse.urlparse(r.get('url', '')).netloc if r.get('url') else None,
+            "url": r.get('url'),
+            "statusCode": r.get('metadata', {}).get('statusCode'),
+            "contentType": "text/html; charset=utf-8", # This is a reasonable default for web scraping
+            "proxyUsed": "basic", # This is an internal detail, can be defaulted
+            "cacheState": "miss", # This is an internal detail, can be defaulted
+            "creditsUsed": 5 # This is an internal detail, can be defaulted
+        }
+        
+        # Remove None values from metadata
+        response_metadata = {k: v for k, v in response_metadata.items() if v is not None}
+
+        page_response = {
+            "json": company_info,
+            "markdown": format_markdown_output_single_page(r), # Call new function for single page markdown
+            "html": r.get('raw_html'),
+            "links": links,
+            "summary": content[:500] + ('...' if content and len(content) > 500 else '') if content else None,
+            "metadata": response_metadata
+        }
+        
+        # Remove None values from the page response
+        page_response = {k: v for k, v in page_response.items() if v is not None}
+        formatted_pages.append(page_response)
+    
+    return json.dumps(formatted_pages, indent=2, ensure_ascii=False)
+
+
+def format_markdown_output_single_page(r: Dict) -> str:
+    """Format a single page's scraping results as markdown, mirroring JSON structure."""
+    if r.get('error'):
+        return (
+            f"# Error on Page: {r.get('url', 'Unknown URL')}\n\n"
+            f"**Error Message**: {r.get('error')}\n"
+            f"**Status Code**: {r.get('metadata', {}).get('statusCode', 'N/A')}\n\n---\n"
+        )
 
     md_output = []
     content = r.get('content')
@@ -674,155 +621,209 @@ def format_markdown_output(results: List[Dict]) -> str:
     links = r.get('links', [])
     tech_categories = r.get('tech_categories', {})
     url = r.get('url')
-    
-    logo_url = next((img.get('url') for img in images if img.get('url') and 'logo' in img['url'].lower()), None)
+
+    md_output.append(f"## Scraped Page: {url}\n")
+    md_output.append("==================================================\n\n")
+
+    # Company Info (from metadata, mirroring 'json' key in JSON output)
     title = metadata.get('title')
-    
-    if logo_url:
-        md_output.append(f"![logo]({logo_url})\n")
+    description = metadata.get('meta_description')
     if title:
-        md_output.append(f"# {title}\n\n")
-    
+        md_output.append(f"### Company Information:\n")
+        md_output.append(f"- **Company Name**: {title}\n")
+        if description:
+            md_output.append(f"- **Company Description**: {description}\n\n")
+        else:
+            md_output.append("\n")
+
+    # Summary
     if content:
-        content_lines = content.split('\n')
-        current_section = []
+        summary = content[:500] + ('...' if len(content) > 500 else '')
+        md_output.append("### Summary:\n")
+        md_output.append(f"{summary}\n\n")
+
+    # Links
+    if links:
+        md_output.append("### Links:\n")
+        md_output.append("----------------\n")
+        internal_links = []
+        external_links = []
+        for link in links:
+            if isinstance(link, dict) and 'url' in link and 'text' in link:
+                if link.get('is_internal'):
+                    internal_links.append(f"- [{link['text']}]({link['url']})")
+                else:
+                    external_links.append(f"- [{link['text']}]({link['url']})")
         
-        for line in content_lines:
-            line = line.strip()
-            
-            if not line:
-                if current_section:
-                    md_output.append("\n".join(current_section) + "\n\n")
-                    current_section = []
-                continue
-                
-            if line.startswith('#'):
-                if current_section:
-                    md_output.append("\n".join(current_section) + "\n\n")
-                    current_section = []
-                if line.startswith('# '):
-                    line = line.replace('', '\n')
-                current_section.append(line)
-            else:
-                current_section.append(line)
+        if internal_links:
+            md_output.append("#### Internal Links:\n")
+            md_output.extend(internal_links)
+            md_output.append("\n\n")
         
-        if current_section:
-            md_output.append("\n".join(current_section) + "\n\n")
-    
+        if external_links:
+            md_output.append("#### External Links:\n")
+            md_output.extend(external_links)
+            md_output.append("\n\n")
+
+    # Metadata (mirroring 'metadata' key in JSON output)
+    md_output.append("### Page Metadata:\n")
+    md_output.append("----------------\n")
+    for key, value in metadata.items():
+        if value is not None:
+            md_output.append(f"- **{key.replace('_', ' ').title()}**: {value}\n")
+    md_output.append("\n")
+
+    # Detected Tech
     all_detected_tech = []
     for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
         if tech_categories.get(category):
             all_detected_tech.extend(tech_categories[category])
     
     if all_detected_tech:
-        md_output.append("## We build with\n\n")
-        md_output.append(" • ".join(sorted(list(set(all_detected_tech)))) + " •\n\n")
-    
-    if logo_url and title and url:
-        md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
-    
-    nav_items = []
-    for link in links:
-        if isinstance(link, dict) and 'url' in link and 'text' in link:
-            if '/works' in link['url'].lower():
-                nav_items.append(f"[Our Works]({link['url']})")
-            elif '/labs' in link['url'].lower():
-                nav_items.append(f"[Labs]({link['url']})")
-            elif '/about' in link['url'].lower():
-                nav_items.append(f"[]({link['url']})")
-    if nav_items:
-        md_output.append(" ".join(nav_items) + "\n\n")
-    
-    connect_link = next((link for link in links if isinstance(link, dict) and '/contact' in link.get('url', '').lower()), None)
-    if connect_link:
-        md_output.append(f"[Connect]({connect_link['url']})\n\n")
-    
-    if logo_url and title and url:
-        md_output.append(f"[![logo]({logo_url}){title}]({url})\n\n")
+        md_output.append("### Technology Stack:\n")
+        md_output.append("----------------\n")
+        for category in ['frontend', 'backend', 'database', 'hosting', 'analytics', 'cms', 'payment', 'other']:
+            if tech_categories.get(category):
+                md_output.append(f"{category.title()}:\n  " + ", ".join(sorted(tech_categories[category])) + "\n")
+        md_output.append("\n")
+
+    # Raw HTML (optional, can be very long)
+    # md_output.append("### Raw HTML:\n")
+    # md_output.append("```html\n" + r.get('raw_html', '')[:1000] + "...\n```\n\n") # Truncate raw HTML
+
+    md_output.append("==================================================\n\n")
     
     return "".join(md_output)
 
+def format_markdown_output(results: List[Dict]) -> str:
+    """Format scraping results as markdown, handling multiple pages by concatenating single page outputs."""
+    if not results:
+        return "# No Results\n\nNo data was returned from the scraping operation.\n\n---\n"
+    
+    full_md_output = []
+    for i, r in enumerate(results):
+        full_md_output.append(f"## Result for Page {i+1}\n")
+        full_md_output.append(format_markdown_output_single_page(r))
+        full_md_output.append("\n") # Add a newline between pages for readability
+    
+    return "".join(full_md_output)
+
 def format_text_output(results: List[Dict]) -> str:
-    text_output = []
-    for r in results:
+    """Format scraping results as plain text, handling multiple pages."""
+    if not results:
+        return "No results available."
+        
+    full_text_output = []
+    
+    for i, r in enumerate(results):
         if not isinstance(r, dict):
             continue
 
         url = r.get('url')
-        if url is None:
-            continue # Skip if URL is not available
+        if not url:
+            continue
 
-        # Check for errors first
-        if 'error' in r:
-            text_output.extend([
-                f"Website: {url}"
-                "\n" + "="*50 + "\n"
+        # Start with website URL and page number
+        full_text_output.extend([
+            f"Page {i+1}: {url}",
+            "=" * 50,
+            ""
+        ])
+
+        # Handle errors
+        error = r.get('error')
+        if error and error not in ('None', None):
+            full_text_output.extend([
+                "Error occurred while scraping:",
+                str(error),
+                "",
+                "=" * 50,
+                ""
             ])
             continue
 
+        # Add metadata
         metadata = r.get('metadata', {})
         title = metadata.get('title')
-        meta_desc = metadata.get('meta_description')
+        description = metadata.get('meta_description')
+        keywords = metadata.get('meta_keywords')
 
-        tech_categories = r.get('tech_categories', {})
-        content = r.get('content')
-        links = r.get('links', [])
-        images = r.get('images', [])
-
-        text_output.append(f"Website: {url}")
         if title:
-            text_output.append(f"Title: {title}")
-        if meta_desc:
-            text_output.append(f"Description: {meta_desc}")
+            full_text_output.append(f"Title: {title}")
+        if description:
+            full_text_output.append(f"Description: {description}")
+        if keywords:
+            full_text_output.append(f"Keywords: {keywords}")
+        full_text_output.append("")
 
-        all_techs = [tech for category_list in tech_categories.values() for tech in category_list]
-        if all_techs:
-            text_output.extend([
-                "\nTechnology Stack:",
-                "----------------"
-            ])
+        # Add technology stack
+        tech_categories = r.get('tech_categories', {})
+        if tech_categories:
+            full_text_output.append("Technology Stack:")
+            full_text_output.append("-" * 16)
             for category, techs in tech_categories.items():
                 if techs:
-                    text_output.append(f"\n{category.title()}:")
-                    text_output.append("  " + ", ".join(techs))
+                    full_text_output.append(f"{category.title()}:")
+                    full_text_output.append("  " + ", ".join(sorted(techs)))
+            full_text_output.append("")
 
-        if links:
-            text_output.extend([
-                "\nLinks Found:",
-                "------------"
-            ])
-            for link in links[:10]:
-                link_url = link.get('url')
-                link_text = link.get('text')
-                if link_url and link_text:
-                    text_output.append(f"  • {link_text}: {link_url}")
-            if len(links) > 10:
-                text_output.append(f"  ... and {len(links) - 10} more links")
-
-        if images:
-            text_output.extend([
-                "\nImages Found:",
-                "-------------"
-            ])
-            for img in images[:10]:
-                img_url = img.get('url')
-                img_alt = img.get('alt')
-                if img_url:
-                    text_output.append(f"  • {img_alt or 'No description'}: {img_url}")
-            if len(images) > 10:
-                text_output.append(f"  ... and {len(images) - 10} more images")
-
+        # Add main content
+        content = r.get('content')
         if content:
-            text_output.extend([
-                "\nContent Preview:",
-                "---------------",
-                content[:1000] + ('...' if len(content) > 1000 else ''),
-                "\n" + "="*50 + "\n"
-            ])
-        else:
-            text_output.append("\nNo content available.\n" + "="*50 + "\n")
-    
-    return "\n".join(text_output)
+            full_text_output.append("Content:")
+            full_text_output.append("-" * 8)
+            full_text_output.append(content)
+            full_text_output.append("")
+
+        # Add navigation links
+        links = r.get('links', [])
+        nav_links = []
+        common_nav_patterns = {
+            'about': ['about', 'about-us', 'company', 'who-we-are', 'our-story'],
+            'contact': ['contact', 'contact-us', 'reach-us', 'get-in-touch', 'support'],
+            'services': ['services', 'solutions', 'what-we-do', 'offerings', 'products'],
+            'portfolio': ['portfolio', 'works', 'projects', 'case-studies', 'our-work'],
+            'team': ['team', 'our-team', 'people', 'staff', 'members'],
+            'blog': ['blog', 'news', 'articles', 'insights', 'posts'],
+            'careers': ['careers', 'jobs', 'work-with-us', 'join-us', 'opportunities']
+        }
+        
+        for link in links:
+            if isinstance(link, dict):
+                link_url = link.get('url', '')
+                text = link.get('text', '').strip()
+                if link_url and text and not link_url.startswith(('#', 'javascript:', 'tel:', 'mailto:')):
+                    # Convert URL and text to lowercase for matching
+                    url_lower = link_url.lower()
+                    text_lower = text.lower()
+                    
+                    # Check if the link appears to be a navigation link
+                    for category, patterns in common_nav_patterns.items():
+                        if any(pattern in url_lower.replace('-', '').replace('_', '').replace('/', '') for pattern in patterns) or \
+                           any(pattern in text_lower.replace('-', '').replace('_', '') for pattern in patterns):
+                            nav_links.append(f"• {text}: {link_url}")
+                            break
+        
+        if nav_links:
+            full_text_output.append("Navigation:")
+            full_text_output.append("-" * 10)
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_nav_links = []
+            for link in nav_links:
+                if link not in seen:
+                    seen.add(link)
+                    unique_nav_links.append(link)
+            full_text_output.extend(unique_nav_links)
+            full_text_output.append("")
+
+        # Add separator at the end
+        full_text_output.extend([
+            "=" * 50,
+            ""
+        ])
+
+    return "\n".join(full_text_output)
 
 def format_ai_response_output(results: List[Dict]) -> str:
      # Placeholder for AI summarization or analysis
