@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     zlib1g-dev \
     curl \
+    sed \
+    procps \
     fonts-liberation \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -29,6 +31,7 @@ RUN apt-get update && apt-get install -y \
     libnss3 \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Install Google Chrome
 RUN curl -sS -o - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
