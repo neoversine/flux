@@ -91,7 +91,6 @@ class InvoiceDetails(BaseModel):
     invoice_no: str
     invoice_date: str
     payment_due_date: str
-    payment_mode: str
     order_id: Optional[str] = None # Added order_id
     order_date: Optional[str] = None # Added order_date
 
@@ -114,15 +113,19 @@ class Item(BaseModel):
     hsn_code: str
     qty: Union[int, float]
     unit_rate: Union[float, str]
-    amount: float
+    tax_percentage: Union[float, str] = Field(default=0.0) # New field for tax percentage
+    tax_amount: Union[float, str] = Field(default=0.0) # New field for tax amount
+    total_amt_inc_gst: Union[float, str] # Renamed 'amount' to 'total_amt_inc_gst'
 
 class SummaryOfCharges(BaseModel):
-    total: float
+    net_sales: Union[float, str] = Field(default=0.0) # New field for Net Sales
     cgst: Union[float, str]
     sgst: Union[float, str]
+    misc: Union[float, str] = Field(default=0.0) # New field for Misc
+    total: Union[float, str] # This will be Net Sales + CGST + SGST + Misc
     balance_received: Union[float, str]
     balance_due: Union[float, str]
-    grand_total: float
+    grand_total: Union[float, str]
 
 class AdditionalInformation(BaseModel):
     total_amount_in_words: str
@@ -142,28 +145,14 @@ class InvoiceCalculator:
     """Handles invoice calculations with precision."""
     
     @staticmethod
-    def calculate_totals(items: List[Dict[str, Any]], summary_of_charges: Dict[str, Any]) -> Decimal:
-        # Use grand_total from summary_of_charges if available
-        if summary_of_charges and summary_of_charges.get("grand_total") is not None:
-            grand_total = Decimal(str(summary_of_charges["grand_total"]))
-        else:
-            subtotal = Decimal('0')
-            for item in items:
-                # Calculate item total if not provided
-                item_total = item.get("amount") # Use 'amount' from new payload
-                if item_total is None:
-                    # Fallback if 'amount' is not directly provided
-                    quantity = Decimal(str(item.get("qty", 0)))
-                    unit_price = Decimal(str(item.get("unit_rate", 0)))
-                    item_total = quantity * unit_price
-                
-                subtotal += Decimal(str(item_total))
-            grand_total = subtotal
+    def calculate_totals(summary_of_charges: Dict[str, Any]) -> Decimal:
+        # Use total from summary_of_charges
+        total = Decimal(str(summary_of_charges.get("total", 0)))
         
         # Round to 2 decimal places
-        grand_total = grand_total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        total = total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         
-        return grand_total
+        return total
 
 
 class InvoiceStyleManager:
@@ -390,6 +379,69 @@ class InvoiceStyleManager:
             rightIndent=10
         )
 
+        self.description_title_style = ParagraphStyle(
+            "description_title_style",
+            parent=self.normal,
+            fontSize=10,
+            fontName=self.default_font,
+            spaceAfter=1 * mm,
+            leading=12,
+            textColor=colors.HexColor("#555555")
+        )
+
+        self.description_text_style = ParagraphStyle(
+            "description_text_style",
+            parent=self.normal,
+            fontSize=9,
+            fontName=self.default_font,
+            spaceAfter=3 * mm,
+            leading=11,
+            backColor=colors.HexColor("#f0f0f0"),
+            borderPadding=0 # Removed borderPadding
+        )
+
+        self.order_amount_title_style = ParagraphStyle(
+            "order_amount_title_style",
+            parent=self.normal,
+            fontSize=10,
+            fontName=self.default_font,
+            spaceAfter=1 * mm,
+            leading=12,
+            textColor=colors.HexColor("#555555")
+        )
+
+        self.order_amount_text_style = ParagraphStyle(
+            "order_amount_text_style",
+            parent=self.normal,
+            fontSize=9,
+            fontName=self.default_font,
+            spaceAfter=3 * mm,
+            leading=11,
+            backColor=colors.HexColor("#f0f0f0"),
+            borderPadding=0 # Removed borderPadding
+        )
+
+        self.terms_title_style = ParagraphStyle(
+            "terms_title_style",
+            parent=self.normal,
+            fontSize=10,
+            fontName=self.default_font,
+            spaceAfter=1 * mm,
+            leading=12,
+            textColor=colors.HexColor("#555555")
+        )
+
+        self.terms_text_style = ParagraphStyle(
+            "terms_text_style",
+            parent=self.normal,
+            fontSize=9,
+            fontName=self.default_font,
+            spaceAfter=0.5 * mm,
+            leading=11,
+            backColor=colors.HexColor("#f0f0f0"),
+            borderPadding=0 # Removed borderPadding
+        )
+
 
 class InvoicePDFGenerator:
     """Generates PDF invoices using ReportLab."""
@@ -430,13 +482,58 @@ class InvoicePDFGenerator:
         elements.append(Spacer(1, 3 * mm)) # Reduced spacer
         elements.extend(self._create_billing_section(data, doc.width))
         elements.append(Spacer(1, 6 * mm)) # Reduced spacer
-        elements.extend(self._create_items_table(data))
+        elements.extend(self._create_items_table(data, doc.width))
         elements.append(Spacer(1, 6 * mm)) # Reduced space after items table
+        
+        # Create a two-column layout for description/terms and summary
+        left_column_content = self._create_description_terms_section(data, doc.width * 0.6) # Allocate 60% width for left column
+        right_column_content = self._create_summary_table(data, doc.width * 0.4) # Allocate 40% width for right column
+
+        two_column_table = Table(
+            [[left_column_content, right_column_content]],
+            colWidths=[doc.width * 0.6, doc.width * 0.4],
+            style=TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ])
+        )
+        elements.append(two_column_table)
+        elements.append(Spacer(1, 6 * mm)) # Spacer after new section
+
         elements.extend(self._create_footer_section(data, doc.width)) # Pass doc.width to footer section
         
         doc.build(elements)
         return file_path
     
+    def _create_description_terms_section(self, data: Dict[str, Any], column_width: float) -> List[Flowable]:
+        """Create the Description, Order Amount in Words, and Terms and Conditions sections."""
+        elements: List[Flowable] = []
+        additional_info = data.get("additional_information", {})
+        description_text = "Thanks for doing business with us!" # Hardcoded as per image
+        order_amount_in_words = additional_info.get("total_amount_in_words", '')
+        terms_and_conditions = additional_info.get("terms_and_conditions", [])
+
+        # DESCRIPTION
+        elements.append(Paragraph("DESCRIPTION", self.style_manager.description_title_style))
+        elements.append(Paragraph(description_text, self.style_manager.description_text_style))
+        elements.append(Spacer(1, 3 * mm))
+
+        # ORDER AMOUNT IN WORDS
+        elements.append(Paragraph("ORDER AMOUNT IN WORDS", self.style_manager.order_amount_title_style))
+        elements.append(Paragraph(order_amount_in_words, self.style_manager.order_amount_text_style))
+        elements.append(Spacer(1, 3 * mm))
+
+        # TERMS AND CONDITIONS
+        elements.append(Paragraph("TERMS AND CONDITIONS", self.style_manager.terms_title_style))
+        for term in terms_and_conditions:
+            elements.append(Paragraph(term, self.style_manager.terms_text_style))
+        elements.append(Spacer(1, 3 * mm))
+
+        return elements
+
     def _convert_pdf_to_image(self, pdf_path: str, invoice_id: str, fmt: str = "jpg") -> str:
         """Converts the first page of a PDF to an image."""
         image_path = os.path.join(IMAGE_DIR, f"{invoice_id}.{fmt}")
@@ -524,8 +621,8 @@ class InvoicePDFGenerator:
         elements.append(Spacer(1, 3 * mm)) # Reduced spacer
 
         # Company Details and Invoice Metadata Table
-        # This table will have 2 columns: Label, Value
-        header_details_table_data = [
+        # Left column content for company details
+        left_col_data = [
             [
                 Paragraph("Address:", self.style_manager.company_info_label_style),
                 Paragraph(company_address.replace(', ', '<br/>'), self.style_manager.company_info_value_style)
@@ -535,12 +632,21 @@ class InvoicePDFGenerator:
                 Paragraph("State:", self.style_manager.company_info_label_style),
                 Paragraph(company_state, self.style_manager.company_info_value_style)
             ],
-            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
-            [
-                Paragraph("Email ID:", self.style_manager.company_info_label_style),
-                Paragraph(company_email, self.style_manager.company_info_value_style)
-            ],
-            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
+            ]
+        
+        left_col_table = Table(left_col_data, colWidths=[30 * mm, 60 * mm])
+        left_col_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ALIGN", (1, 0), (1, -1), "LEFT"),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ]))
+
+        # Right column content for invoice metadata
+        right_col_data = [
             [
                 Paragraph("Invoice No:", self.style_manager.company_info_label_style),
                 Paragraph(invoice_no, self.style_manager.company_info_value_style)
@@ -549,23 +655,42 @@ class InvoicePDFGenerator:
             [
                 Paragraph("Invoice Date:", self.style_manager.company_info_label_style),
                 Paragraph(invoice_date, self.style_manager.company_info_value_style)
+            ],
+            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
+            [
+                Paragraph("Phone No:", self.style_manager.company_info_label_style),
+                Paragraph(company_mobile, self.style_manager.company_info_value_style)
+            ],
+            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
+            [
+                Paragraph("Email:", self.style_manager.company_info_label_style),
+                Paragraph(company_email, self.style_manager.company_info_value_style)
             ]
         ]
-
-        header_details_table = Table(
-            header_details_table_data,
-            colWidths=[30 * mm, 140 * mm], # Adjusted column widths for better alignment
-        )
-        header_details_table.setStyle(TableStyle([
+        right_col_table = Table(right_col_data, colWidths=[30 * mm, 60 * mm])
+        right_col_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"), # Labels left aligned
-            ("ALIGN", (1, 0), (1, -1), "LEFT"), # Values left aligned
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ALIGN", (1, 0), (1, -1), "LEFT"),
             ('LEFTPADDING', (0,0), (-1,-1), 0),
             ('RIGHTPADDING', (0,0), (-1,-1), 0),
             ('TOPPADDING', (0,0), (-1,-1), 0),
             ('BOTTOMPADDING', (0,0), (-1,-1), 0),
         ]))
-        elements.append(header_details_table)
+
+        # Combine into a two-column table
+        header_details_two_col_table = Table(
+            [[left_col_table, right_col_table]],
+            colWidths=[doc_width / 2, doc_width / 2],
+            style=TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ])
+        )
+        elements.append(header_details_two_col_table)
         elements.append(Spacer(1, 2 * mm)) # Add some space after the header
 
         return elements
@@ -597,54 +722,94 @@ class InvoicePDFGenerator:
         order_id = invoice_details.get('order_id', '')
         order_date = invoice_details.get('order_date', '')
 
-        client_details_table_data = [
+        # Left column content for client details
+        left_col_data = [
             [Paragraph("<b>Name:</b>", self.style_manager.client_info_style), Paragraph(client_name, self.style_manager.client_info_style)],
             [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
             [Paragraph("<b>Delivery Address:</b>", self.style_manager.client_info_style), Paragraph(client_address.replace(', ', '<br/>'), self.style_manager.client_info_style)],
             [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
             [Paragraph("<b>Place of Supply:</b>", self.style_manager.client_info_style), Paragraph(place_of_supply, self.style_manager.client_info_style)],
-            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
-            [Paragraph("<b>Order ID:</b>", self.style_manager.client_info_style), Paragraph(order_id, self.style_manager.client_info_style)],
-            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
-            [Paragraph("<b>Order Date:</b>", self.style_manager.client_info_style), Paragraph(order_date, self.style_manager.client_info_style)],
         ]
-
-        client_details_table = Table(
-            client_details_table_data,
-            colWidths=[30*mm, 140*mm], # Adjusted column widths for 2 columns
-        )
-        client_details_table.setStyle(TableStyle([
+        left_col_table = Table(left_col_data, colWidths=[30 * mm, 60 * mm])
+        left_col_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ('LEFTPADDING', (0,0), (-1,-1), 0),
             ('RIGHTPADDING', (0,0), (-1,-1), 0),
             ('TOPPADDING', (0,0), (-1,-1), 0),
             ('BOTTOMPADDING', (0,0), (-1,-1), 0),
         ]))
-        elements.append(client_details_table)
+
+        # Right column content for order details
+        right_col_data = [
+            [Paragraph("<b>Order ID:</b>", self.style_manager.client_info_style), Paragraph(order_id, self.style_manager.client_info_style)],
+            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
+            [Paragraph("<b>Order Date:</b>", self.style_manager.client_info_style), Paragraph(order_date, self.style_manager.client_info_style)],
+        ]
+        right_col_table = Table(right_col_data, colWidths=[30 * mm, 60 * mm])
+        right_col_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ]))
+
+        # Combine into a two-column table
+        client_details_two_col_table = Table(
+            [[left_col_table, right_col_table]],
+            colWidths=[doc_width / 2, doc_width / 2],
+            style=TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ])
+        )
+        elements.append(client_details_two_col_table)
         elements.append(Spacer(1, 2 * mm))
 
         return elements
     
-    def _create_items_table(self, data: Dict[str, Any]) -> List[Flowable]:
+    def _create_items_table(self, data: Dict[str, Any], doc_width: float) -> List[Flowable]:
         """Create items table and totals section."""
         elements: List[Flowable] = []
         items = data.get("items", [])
         summary_of_charges = data.get("summary_of_charges", {})
         currency = data.get("currency", DEFAULT_CURRENCY)
         
-        # Calculate grand total
-        grand_total = self.calculator.calculate_totals(items, summary_of_charges)
+        # Calculate total
+        total = self.calculator.calculate_totals(summary_of_charges)
         
+        # Ensure sub_total is calculated if not provided in payload
+        if summary_of_charges.get("sub_total") is None:
+            subtotal_from_items = Decimal('0')
+            for item in items:
+                quantity = Decimal(str(item.get("qty", 0)))
+                unit_price = Decimal(str(item.get("unit_rate", 0)))
+                total_amt_inc_gst = Decimal(str(item.get("total_amt_inc_gst", 0)))
+                
+                # If total_amt_inc_gst is provided, use it, otherwise calculate
+                if total_amt_inc_gst:
+                    subtotal_from_items += total_amt_inc_gst
+                else:
+                    subtotal_from_items += quantity * unit_price
+            summary_of_charges["sub_total"] = subtotal_from_items.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        # Update the grand_total in summary_of_charges to be the calculated total
+        summary_of_charges["total"] = total
 
         # Create table data for items
         table_data: List[List[Any]] = [
             [
                 Paragraph("Sr.No", self.style_manager.table_header_style),
-                Paragraph("Items", self.style_manager.table_header_style),
-                Paragraph("HSN/SAC", self.style_manager.table_header_style), # Added HSN/SAC header
+                Paragraph("Item Name", self.style_manager.table_header_style),
+                Paragraph("HSN Code", self.style_manager.table_header_style),
                 Paragraph("Qty", self.style_manager.table_header_style),
-                Paragraph("Unit Price", self.style_manager.table_header_style),
-                Paragraph("Amount", self.style_manager.table_header_style)
+                Paragraph("Price/Unit", self.style_manager.table_header_style),
+                Paragraph("Tax%", self.style_manager.table_header_style),
+                Paragraph("Tax Amount", self.style_manager.table_header_style),
+                Paragraph("Total Amt. Inc GST (INR)", self.style_manager.table_header_style)
             ]
         ]
         
@@ -652,21 +817,25 @@ class InvoicePDFGenerator:
         for i, item in enumerate(items):
             quantity = Decimal(str(item.get("qty", 0)))
             unit_price = Decimal(str(item.get("unit_rate", 0)))
-            amount = Decimal(str(item.get("amount", 0))) # Use 'amount' from new payload
-            hsn_code = item.get("hsn_code", "") # Get HSN code
+            tax_percentage = Decimal(str(item.get("tax_percentage", 0)))
+            tax_amount = Decimal(str(item.get("tax_amount", 0)))
+            total_amt_inc_gst = Decimal(str(item.get("total_amt_inc_gst", 0)))
+            hsn_code = item.get("hsn_code", "")
 
             table_data.append([
                 Paragraph(str(i + 1), self.style_manager.table_data_style),
                 Paragraph(item.get("description", ""), self.style_manager.table_data_style),
-                Paragraph(hsn_code, self.style_manager.table_data_style), # Added HSN code
+                Paragraph(hsn_code, self.style_manager.table_data_style),
                 Paragraph(str(quantity), self.style_manager.table_data_style),
                 Paragraph(self.currency_formatter.format_money(unit_price, currency), self.style_manager.table_data_style),
-                Paragraph(self.currency_formatter.format_money(amount, currency), self.style_manager.table_data_style)
+                Paragraph(f"{tax_percentage:,.2f}%", self.style_manager.table_data_style),
+                Paragraph(self.currency_formatter.format_money(tax_amount, currency), self.style_manager.table_data_style),
+                Paragraph(self.currency_formatter.format_money(total_amt_inc_gst, currency), self.style_manager.table_data_style)
             ])
         
         items_table = Table(
             table_data, 
-            colWidths=[10 * mm, 50 * mm, 20 * mm, 20 * mm, 35 * mm, 35 * mm], # Adjusted column widths for new HSN/SAC column
+            colWidths=[8 * mm, 35 * mm, 18 * mm, 12 * mm, 25 * mm, 15 * mm, 25 * mm, 32 * mm], # Adjusted column widths for new columns
             repeatRows=1 # Repeat header row on new pages
         )
         items_table.setStyle(TableStyle([
@@ -680,56 +849,69 @@ class InvoicePDFGenerator:
         ]))
         elements.append(items_table)
         elements.append(Spacer(1, 6 * mm))
+        return elements
 
-        # Summary of Charges
-        summary_table_data = []
-        summary_total = Decimal(str(summary_of_charges.get("total", 0)))
+    def _create_summary_table(self, data: Dict[str, Any], doc_width: float) -> List[Flowable]:
+        """Create the summary of charges table."""
+        summary_elements: List[Flowable] = []
+        summary_of_charges = data.get("summary_of_charges", {})
+        currency = data.get("currency", DEFAULT_CURRENCY)
+
+        summary_net_sales = Decimal(str(summary_of_charges.get("net_sales", 0)))
         summary_cgst = Decimal(str(summary_of_charges.get("cgst", 0)))
         summary_sgst = Decimal(str(summary_of_charges.get("sgst", 0)))
+        summary_misc = Decimal(str(summary_of_charges.get("misc", 0)))
+        summary_total_amount = Decimal(str(summary_of_charges.get("total", 0))) # Using 'total' for 'Total Amount'
         summary_balance_received = Decimal(str(summary_of_charges.get("balance_received", 0)))
         summary_balance_due = Decimal(str(summary_of_charges.get("balance_due", 0)))
-        summary_grand_total = Decimal(str(summary_of_charges.get("grand_total", 0)))
 
-        summary_table_data.append([
-            Paragraph("Total Amount (Excl. Tax)", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_total, currency), self.style_manager.total_value_style)
-        ])
-        summary_table_data.append([
-            Paragraph("CGST", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_cgst, currency), self.style_manager.total_value_style)
-        ])
-        summary_table_data.append([
-            Paragraph("SGST", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_sgst, currency), self.style_manager.total_value_style)
-        ])
-        summary_table_data.append([
-            Paragraph("Balance Received", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_balance_received, currency), self.style_manager.total_value_style)
-        ])
-        summary_table_data.append([
-            Paragraph("Balance Due", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_balance_due, currency), self.style_manager.total_value_style)
-        ])
-        summary_table_data.append([
-            Paragraph("Grand Total", self.style_manager.total_label_style),
-            Paragraph(self.currency_formatter.format_money(summary_grand_total, currency), self.style_manager.total_value_style)
-        ])
+        summary_table_data = [
+            [
+                Paragraph("Net Sales:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_net_sales, currency), self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("CGST:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_cgst, currency), self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("SGST:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_sgst, currency), self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("Misc:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_misc, currency), self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("<b>Total Amount:</b>", self.style_manager.total_label_style),
+                Paragraph(f"<b>{self.currency_formatter.format_money(summary_total_amount, currency)}</b>", self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("Balance Received:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_balance_received, currency), self.style_manager.total_value_style)
+            ],
+            [
+                Paragraph("Balance Due:", self.style_manager.total_label_style),
+                Paragraph(self.currency_formatter.format_money(summary_balance_due, currency), self.style_manager.total_value_style)
+            ]
+        ]
 
         summary_table = Table(
             summary_table_data,
-            colWidths=[140 * mm, 30 * mm],
+            colWidths=[doc_width / 2, doc_width / 2],
         )
         summary_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BOTTOMPADDING", (0,0), (-1,-1), 3),
             ("TOPPADDING", (0,0), (-1,-1), 3),
-            ("LINEBELOW", (0,-1), (-1,-1), 1, colors.black), # Line below the grand total
+            ("BACKGROUND", (0,4), (-1,4), colors.HexColor("#13cf16")), # Highlight Total Amount row (index 4)
+            ("TEXTCOLOR", (0,4), (-1,4), colors.white), # White text for Total Amount row
         ]))
-        elements.append(summary_table)
-        elements.append(Spacer(1, 12 * mm))
+        summary_elements.append(summary_table)
+        summary_elements.append(Spacer(1, 12 * mm))
 
-        return elements
+        return summary_elements
     
     def _create_footer_section(self, data: Dict[str, Any], doc_width: float) -> List[Flowable]: # Added doc_width parameter
         """Create footer section with terms and authorised signatory."""
@@ -739,10 +921,11 @@ class InvoicePDFGenerator:
         terms_and_conditions = additional_info.get("terms_and_conditions", [])
         authorised_signatory = additional_info.get("authorised_signatory", '')
         authorised_signatory_image_url = additional_info.get("authorised_signatory_image_url", '')
-
-        for term in terms_and_conditions:
-            elements.append(Paragraph(term, self.style_manager.footer_text_style))
-        elements.append(Spacer(1, 3 * mm)) # Add some space before the signature
+        
+        # Terms and conditions are now handled in _create_description_terms_section
+        # for term in terms_and_conditions:
+        #     elements.append(Paragraph(term, self.style_manager.footer_text_style))
+        # elements.append(Spacer(1, 3 * mm)) # Add some space before the signature
 
         # Authorised Signatory section using a table for alignment
         signatory_elements: List[Flowable] = []
