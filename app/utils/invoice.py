@@ -67,6 +67,60 @@ class CurrencyFormatter:
             logger.error(f"Error formatting currency amount {amount}: {e}")
             return f"{amount} INR"
 
+class NumberToWordsConverter:
+    """Converts numerical amounts to words."""
+    
+    def __init__(self):
+        self.units = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"]
+        self.teens = ["Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+        self.tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+        self.thousands = ["", "Thousand", "Million", "Billion", "Trillion"] # Extend as needed
+
+    def _convert_less_than_thousand(self, num: int) -> str:
+        if num == 0:
+            return ""
+        if num < 10:
+            return self.units[num]
+        if num < 20:
+            return self.teens[num - 10]
+        if num < 100:
+            return self.tens[num // 10] + (" " + self.units[num % 10] if (num % 10 != 0) else "")
+        return self.units[num // 100] + " Hundred" + (" " + self._convert_less_than_thousand(num % 100) if (num % 100 != 0) else "")
+
+    def convert_to_words(self, amount: Decimal) -> str:
+        if amount == 0:
+            return "Zero Rupees Only"
+
+        # Separate integer and decimal parts
+        integer_part = int(amount.to_integral_value(rounding=ROUND_HALF_UP))
+        decimal_part = int((amount - integer_part) * 100)
+
+        words = []
+        if integer_part > 0:
+            i = 0
+            while integer_part > 0:
+                chunk = integer_part % 1000
+                if chunk != 0:
+                    words.append(self._convert_less_than_thousand(chunk) + " " + self.thousands[i])
+                integer_part //= 1000
+                i += 1
+            words.reverse()
+            
+        result = " ".join(words).strip()
+        
+        if result:
+            result += " Rupees"
+        
+        if decimal_part > 0:
+            if result:
+                result += " and "
+            result += self._convert_less_than_thousand(decimal_part) + " Paisa"
+        
+        if result:
+            result += " Only"
+        
+        return result.strip()
+
 # Ensure directories exist
 os.makedirs(PDF_DIR, exist_ok=True)
 os.makedirs(IMAGE_DIR, exist_ok=True) # Ensure image directory exists
@@ -128,7 +182,7 @@ class SummaryOfCharges(BaseModel):
     grand_total: Union[float, str]
 
 class AdditionalInformation(BaseModel):
-    total_amount_in_words: str
+    total_amount_in_words: Optional[str] = None
     terms_and_conditions: List[str]
     authorised_signatory: str
     authorised_signatory_image_url: Optional[str] = None # Added signatory image URL
@@ -451,6 +505,7 @@ class InvoicePDFGenerator:
         self.style_manager = InvoiceStyleManager()
         self.image_handler = ImageHandler()
         self.currency_formatter = CurrencyFormatter()
+        self.number_to_words_converter = NumberToWordsConverter()
     
     def generate_pdf(self, invoice_id: str, data: Union[Dict[str, Any], InvoicePayload]) -> str:
         try:
@@ -512,9 +567,17 @@ class InvoicePDFGenerator:
         """Create the Description, Order Amount in Words, and Terms and Conditions sections."""
         elements: List[Flowable] = []
         additional_info = data.get("additional_information", {})
+        summary_of_charges = data.get("summary_of_charges", {})
+        
         description_text = "Thanks for doing business with us!" # Hardcoded as per image
-        order_amount_in_words = additional_info.get("total_amount_in_words", '')
         terms_and_conditions = additional_info.get("terms_and_conditions", [])
+
+        # Get total amount and convert to words
+        total_amount = Decimal(str(summary_of_charges.get("total", 0)))
+        dynamic_order_amount_in_words = self.number_to_words_converter.convert_to_words(total_amount)
+        
+        # Use provided total_amount_in_words if available, otherwise use dynamic one
+        order_amount_in_words = additional_info.get("total_amount_in_words", dynamic_order_amount_in_words)
 
         # DESCRIPTION
         elements.append(Paragraph("DESCRIPTION", self.style_manager.description_title_style))
@@ -941,7 +1004,7 @@ class InvoicePDFGenerator:
 
         footer_table_data = [
             [
-                Paragraph("For Eternal Limited (formerly known as Zomato Limited)", self.style_manager.small_bold),
+                Paragraph("For Finno Farms(Brand of Finno AQ Private Limited"), self.style_manager.small_bold),
                 signatory_elements
             ]
         ]
