@@ -156,7 +156,7 @@ class CompanyInformation(BaseModel):
     company_logo_url: Optional[str]
     brand_name: Optional[str]
     state: Optional[str] = None # Added state field
-
+    gstin: Optional[str] = None # Added GSTIN field
 class ClientInformation(BaseModel):
     name: str
     address: str
@@ -630,7 +630,7 @@ class InvoicePDFGenerator:
         company_mobile = company_info.get('mobile', '')
         company_logo_url = company_info.get('company_logo_url', '')
         company_state = company_info.get('state', '') # Retrieve state from company_info
-
+        company_gstin = company_info.get('GSTIN', '') # Retrieve GSTIN from company_info
         invoice_no = invoice_details.get('invoice_no', '')
         invoice_date = invoice_details.get('invoice_date', '')
         payment_due_date = invoice_details.get('payment_due_date', '')
@@ -694,6 +694,11 @@ class InvoicePDFGenerator:
             [
                 Paragraph("State:", self.style_manager.company_info_label_style),
                 Paragraph(company_state, self.style_manager.company_info_value_style)
+            ],
+            [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
+            [
+                Paragraph("GSTIN:", self.style_manager.company_info_label_style),
+                Paragraph(company_gstin, self.style_manager.company_info_value_style)
             ],
             ]
         
@@ -1004,7 +1009,7 @@ class InvoicePDFGenerator:
 
         footer_table_data = [
             [
-                Paragraph("For Finno Farms(Brand of Finno AQ Private Limited)", self.style_manager.small_bold),
+                Paragraph("For Eternal Limited (formerly known as Zomato Limited)", self.style_manager.small_bold),
                 signatory_elements
             ]
         ]
