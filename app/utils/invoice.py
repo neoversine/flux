@@ -1004,7 +1004,7 @@ class InvoicePDFGenerator:
 
         footer_table_data = [
             [
-                Paragraph("For Finno Farms(Brand of Finno AQ Private Limited"), self.style_manager.small_bold),
+                Paragraph("For Finno Farms(Brand of Finno AQ Private Limited)", self.style_manager.small_bold),
                 signatory_elements
             ]
         ]
