@@ -630,7 +630,7 @@ class InvoicePDFGenerator:
         company_mobile = company_info.get('mobile', '')
         company_logo_url = company_info.get('company_logo_url', '')
         company_state = company_info.get('state', '') # Retrieve state from company_info
-        company_gstin = company_info.get('GSTIN', '') # Retrieve GSTIN from company_info
+        company_gstin = company_info.get('gstin', '') # Retrieve GSTIN from company_info
         invoice_no = invoice_details.get('invoice_no', '')
         invoice_date = invoice_details.get('invoice_date', '')
         payment_due_date = invoice_details.get('payment_due_date', '')
