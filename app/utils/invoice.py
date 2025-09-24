@@ -3,7 +3,7 @@ import os
 import logging
 from io import BytesIO
 from typing import Dict, Any, List, Optional, Tuple, Union
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 
 import requests
 from fastapi import APIRouter, Body, HTTPException, BackgroundTasks
@@ -92,33 +92,50 @@ class NumberToWordsConverter:
             return "Zero Rupees Only"
 
         # Separate integer and decimal parts
-        integer_part = int(amount.to_integral_value(rounding=ROUND_HALF_UP))
-        decimal_part = int((amount - integer_part) * 100)
+        integer_part = int(amount.quantize(Decimal('1.'), rounding=ROUND_DOWN))
+        decimal_part = int((amount - Decimal(integer_part)) * 100)
 
-        words = []
+        words_parts = []
+
         if integer_part > 0:
             i = 0
-            while integer_part > 0:
-                chunk = integer_part % 1000
+            temp_integer_part = integer_part
+            while temp_integer_part > 0:
+                chunk = temp_integer_part % 1000
                 if chunk != 0:
-                    words.append(self._convert_less_than_thousand(chunk) + " " + self.thousands[i])
-                integer_part //= 1000
+                    words_parts.append(self._convert_less_than_thousand(chunk) + " " + self.thousands[i])
+                temp_integer_part //= 1000
                 i += 1
-            words.reverse()
+            words_parts.reverse()
             
-        result = " ".join(words).strip()
-        
-        if result:
-            result += " Rupees"
-        
+            integer_words = " ".join(words_parts).strip()
+            if integer_part == 1:
+                integer_words += " Rupee"
+            else:
+                integer_words += " Rupees"
+            words_parts = [integer_words]
+        else:
+            words_parts = [] # Ensure it's empty if no integer part
+
         if decimal_part > 0:
-            if result:
-                result += " and "
-            result += self._convert_less_than_thousand(decimal_part) + " Paisa"
+            decimal_words = self._convert_less_than_thousand(decimal_part)
+            if decimal_part == 1:
+                decimal_words += " Paisa"
+            else:
+                decimal_words += " Paisa"
+            
+            if words_parts:
+                words_parts.append("and " + decimal_words)
+            else:
+                words_parts.append(decimal_words)
+        
+        result = " ".join(words_parts).strip()
         
         if result:
             result += " Only"
-        
+        else:
+            return "Zero Rupees Only" # Handle case where amount is 0 or only has zero decimal part
+
         return result.strip()
 
 # Ensure directories exist
@@ -182,7 +199,7 @@ class SummaryOfCharges(BaseModel):
     grand_total: Union[float, str]
 
 class AdditionalInformation(BaseModel):
-    total_amount_in_words: Optional[str] = None
+    total_amount_in_words: Optional[str]
     terms_and_conditions: List[str]
     authorised_signatory: str
     authorised_signatory_image_url: Optional[str] = None # Added signatory image URL
@@ -576,8 +593,15 @@ class InvoicePDFGenerator:
         total_amount = Decimal(str(summary_of_charges.get("total", 0)))
         dynamic_order_amount_in_words = self.number_to_words_converter.convert_to_words(total_amount)
         
-        # Use provided total_amount_in_words if available, otherwise use dynamic one
-        order_amount_in_words = additional_info.get("total_amount_in_words", dynamic_order_amount_in_words)
+        # Use provided total_amount_in_words if available and not empty, otherwise use dynamic one
+        provided_amount_in_words = additional_info.get("total_amount_in_words")
+        if provided_amount_in_words:
+            order_amount_in_words = provided_amount_in_words
+        else:
+            order_amount_in_words = dynamic_order_amount_in_words
+        
+        logger.info(f"Total amount for conversion: {total_amount}")
+        logger.info(f"Converted amount in words: {order_amount_in_words}")
 
         # DESCRIPTION
         elements.append(Paragraph("DESCRIPTION", self.style_manager.description_title_style))
@@ -588,7 +612,6 @@ class InvoicePDFGenerator:
         elements.append(Paragraph("ORDER AMOUNT IN WORDS", self.style_manager.order_amount_title_style))
         elements.append(Paragraph(order_amount_in_words, self.style_manager.order_amount_text_style))
         elements.append(Spacer(1, 3 * mm))
-
         # TERMS AND CONDITIONS
         elements.append(Paragraph("TERMS AND CONDITIONS", self.style_manager.terms_title_style))
         for term in terms_and_conditions:
@@ -625,12 +648,12 @@ class InvoicePDFGenerator:
         invoice_details = data.get('invoice_details', {})
 
         company_name = company_info.get('name', '')
-        company_address = company_info.get('address', '')
+        company_address = company_info.get('address', '') or '' # Ensure it's a string
         company_email = company_info.get('email', '')
         company_mobile = company_info.get('mobile', '')
         company_logo_url = company_info.get('company_logo_url', '')
-        company_state = company_info.get('state', '') # Retrieve state from company_info
-        company_gstin = company_info.get('gstin', '') # Retrieve GSTIN from company_info
+        company_state = company_info.get('state', '') or '' # Ensure it's a string
+        company_gstin = company_info.get('gstin', '') or '' # Ensure it's a string
         invoice_no = invoice_details.get('invoice_no', '')
         invoice_date = invoice_details.get('invoice_date', '')
         payment_due_date = invoice_details.get('payment_due_date', '')
@@ -688,7 +711,7 @@ class InvoicePDFGenerator:
         left_col_data = [
             [
                 Paragraph("Address:", self.style_manager.company_info_label_style),
-                Paragraph(company_address.replace(', ', '<br/>'), self.style_manager.company_info_value_style)
+                Paragraph(company_address.replace(', ', '<br/>') if company_address else '', self.style_manager.company_info_value_style)
             ],
             [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
             [
@@ -783,8 +806,8 @@ class InvoicePDFGenerator:
 
         client_information = data.get('client_information', {})
         client_name = client_information.get('name', '')
-        client_address = client_information.get('address', '')
-        place_of_supply = client_information.get('place_of_supply', '')
+        client_address = client_information.get('address', '') or '' # Ensure it's a string
+        place_of_supply = client_information.get('place_of_supply', '') or '' # Ensure it's a string
 
         invoice_details = data.get('invoice_details', {})
         order_id = invoice_details.get('order_id', '')
@@ -794,7 +817,7 @@ class InvoicePDFGenerator:
         left_col_data = [
             [Paragraph("<b>Name:</b>", self.style_manager.client_info_style), Paragraph(client_name, self.style_manager.client_info_style)],
             [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
-            [Paragraph("<b>Delivery Address:</b>", self.style_manager.client_info_style), Paragraph(client_address.replace(', ', '<br/>'), self.style_manager.client_info_style)],
+            [Paragraph("<b>Delivery Address:</b>", self.style_manager.client_info_style), Paragraph(client_address.replace(', ', '<br/>') if client_address else '', self.style_manager.client_info_style)],
             [Spacer(1, 1 * mm), Spacer(1, 1 * mm)], # Add line gap
             [Paragraph("<b>Place of Supply:</b>", self.style_manager.client_info_style), Paragraph(place_of_supply, self.style_manager.client_info_style)],
         ]
